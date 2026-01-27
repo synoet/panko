@@ -4,7 +4,7 @@ use crate::domain::{Commit, Diff, DiffLine, DiffStats, FileDiff, Hunk};
 use crate::ports::GitRepo;
 use anyhow::{anyhow, Context, Result};
 use git2::{DiffOptions, Repository, Sort};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct Git2Repo {
     repo: Repository,
@@ -58,6 +58,16 @@ impl Git2Repo {
 }
 
 impl GitRepo for Git2Repo {
+    fn repo_path(&self) -> Result<String> {
+        self.repo
+            .path()
+            .parent() // .git dir -> repo root
+            .unwrap_or(self.repo.path())
+            .to_str()
+            .map(String::from)
+            .ok_or_else(|| anyhow!("Repository path is not valid UTF-8"))
+    }
+
     fn current_branch(&self) -> Result<String> {
         let head = self.repo.head().context("Failed to get HEAD")?;
         if head.is_branch() {
@@ -164,6 +174,13 @@ impl GitRepo for Git2Repo {
             .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
 
         parse_git2_diff(&diff)
+    }
+
+    fn workdir(&self) -> Result<PathBuf> {
+        self.repo
+            .workdir()
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("Repository has no working directory (bare repo?)"))
     }
 }
 

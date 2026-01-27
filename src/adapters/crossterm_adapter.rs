@@ -1,9 +1,9 @@
 //! Crossterm implementation of the Terminal port.
 
-use crate::ports::{KeyCode, KeyEvent, KeyModifiers, Terminal, TerminalEvent};
+use crate::ports::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Terminal, TerminalEvent};
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode as CtKeyCode, KeyModifiers as CtKeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode as CtKeyCode, KeyModifiers as CtKeyModifiers, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,7 +19,7 @@ impl CrosstermTerminal {
     pub fn new() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = RatatuiTerminal::new(backend)?;
         Ok(Self { terminal })
@@ -29,7 +29,7 @@ impl CrosstermTerminal {
 impl Drop for CrosstermTerminal {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
     }
 }
 
@@ -52,6 +52,17 @@ impl Terminal for CrosstermTerminal {
                             code,
                             modifiers: convert_modifiers(key.modifiers),
                         })));
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            return Ok(Some(TerminalEvent::Mouse(MouseEvent::ScrollUp)));
+                        }
+                        MouseEventKind::ScrollDown => {
+                            return Ok(Some(TerminalEvent::Mouse(MouseEvent::ScrollDown)));
+                        }
+                        _ => {} // Ignore other mouse events (clicks, moves, etc.)
                     }
                 }
                 Event::Resize(w, h) => {

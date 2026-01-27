@@ -11,7 +11,14 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize(u16, u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MouseEvent {
+    ScrollUp,
+    ScrollDown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

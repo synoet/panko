@@ -9,8 +9,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, ListState, Padding, Paragraph},
     Frame,
 };
+use std::collections::HashSet;
 
 /// Render the main PR diff view with sidebar and content.
+#[allow(clippy::too_many_arguments)]
 pub fn render_main(
     frame: &mut Frame,
     area: Rect,
@@ -20,44 +22,186 @@ pub fn render_main(
     selected_tree_item: usize,
     current_file_index: usize,
     scroll: usize,
+    collapsed: &HashSet<usize>,
+    viewed: &HashSet<usize>,
+    filter: &str,
+    filter_focused: bool,
+    view_mode: diff_view::DiffViewMode,
     branch: &str,
     base: &str,
     tree_state: &mut ListState,
+    sidebar_collapsed: bool,
+    has_pending_changes: bool,
 ) {
-    // Clear with background color
-    let bg_block = Block::default().style(styles::style_default());
-    frame.render_widget(bg_block, area);
-
-    // Split into sidebar and main content
-    let sidebar_width = 35.min(area.width / 3);
-
-    let chunks = Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            Constraint::Length(sidebar_width),
-            Constraint::Min(1),
-        ])
+    // Split into header and main content area (with padding below header)
+    let vertical_chunks = Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(area);
 
-    // Render file tree sidebar
-    file_tree::render(frame, chunks[0], flat_items, selected_tree_item, tree_state);
+    // Render full-width header
+    render_global_header(frame, vertical_chunks[0], diff, branch, base, current_file_index, viewed, sidebar_collapsed, has_pending_changes);
 
-    // Render diff view
-    diff_view::render(
-        frame,
-        chunks[1],
-        diff,
-        diff_lines,
-        scroll,
-        current_file_index,
-        branch,
-        base,
-    );
+    if sidebar_collapsed {
+        // Full-width diff view when sidebar is collapsed
+        // Add horizontal padding
+        let padded_area = Rect {
+            x: vertical_chunks[1].x + 2,
+            y: vertical_chunks[1].y,
+            width: vertical_chunks[1].width.saturating_sub(4),
+            height: vertical_chunks[1].height,
+        };
+
+        match view_mode {
+            diff_view::DiffViewMode::Unified => {
+                diff_view::render_unified(
+                    frame,
+                    padded_area,
+                    diff,
+                    diff_lines,
+                    scroll,
+                    current_file_index,
+                    collapsed,
+                    viewed,
+                );
+            }
+            diff_view::DiffViewMode::Split => {
+                diff_view::render_split(
+                    frame,
+                    padded_area,
+                    diff,
+                    diff_lines,
+                    scroll,
+                    current_file_index,
+                    collapsed,
+                    viewed,
+                );
+            }
+        }
+    } else {
+        // Split main area into sidebar and content
+        let sidebar_width = 40.min(vertical_chunks[1].width / 3);
+
+        let horizontal_chunks = Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
+            .split(vertical_chunks[1]);
+
+        // Render file tree sidebar
+        file_tree::render(
+            frame,
+            horizontal_chunks[0],
+            flat_items,
+            selected_tree_item,
+            current_file_index,
+            viewed,
+            filter,
+            filter_focused,
+            tree_state,
+        );
+
+        // Add horizontal padding to diff area
+        let diff_area = Rect {
+            x: horizontal_chunks[1].x + 1,
+            y: horizontal_chunks[1].y,
+            width: horizontal_chunks[1].width.saturating_sub(2),
+            height: horizontal_chunks[1].height,
+        };
+
+        // Render diff view
+        match view_mode {
+            diff_view::DiffViewMode::Unified => {
+                diff_view::render_unified(
+                    frame,
+                    diff_area,
+                    diff,
+                    diff_lines,
+                    scroll,
+                    current_file_index,
+                    collapsed,
+                    viewed,
+                );
+            }
+            diff_view::DiffViewMode::Split => {
+                diff_view::render_split(
+                    frame,
+                    diff_area,
+                    diff,
+                    diff_lines,
+                    scroll,
+                    current_file_index,
+                    collapsed,
+                    viewed,
+                );
+            }
+        }
+    }
+}
+
+/// Render the global header spanning full width.
+fn render_global_header(
+    frame: &mut Frame,
+    area: Rect,
+    diff: &Diff,
+    branch: &str,
+    base: &str,
+    current_file: usize,
+    viewed: &HashSet<usize>,
+    sidebar_collapsed: bool,
+    has_pending_changes: bool,
+) {
+    let stats = diff.total_stats();
+    let file_count = diff.file_count();
+    let viewed_count = viewed.len();
+    let file_indicator = format!("File {}/{}", current_file + 1, file_count);
+    let viewed_indicator = format!("{}/{} viewed", viewed_count, file_count);
+    let sidebar_hint = if sidebar_collapsed { "b show" } else { "b hide" };
+
+    let mut spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(branch, Style::default().fg(styles::FG_DEFAULT)),
+        Span::styled(" → ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(base, Style::default().fg(styles::FG_DEFAULT)),
+        Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(format!("+{}", stats.additions), styles::style_stat_addition()),
+        Span::styled(" ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(format!("-{}", stats.deletions), styles::style_stat_deletion()),
+        Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(file_indicator, Style::default().fg(styles::FG_MUTED)),
+        Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(viewed_indicator, Style::default().fg(styles::FG_ADDITION)),
+    ];
+
+    // Show refresh indicator if there are pending changes
+    if has_pending_changes {
+        spans.push(Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)));
+        spans.push(Span::styled("● ", Style::default().fg(styles::FG_WARNING)));
+        spans.push(Span::styled("r", Style::default().fg(styles::FG_WARNING)));
+        spans.push(Span::styled(" refresh", Style::default().fg(styles::FG_WARNING)));
+    }
+
+    spans.extend([
+        Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled("v", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" viewed  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled("b", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(format!(" {}  ", sidebar_hint.split_whitespace().last().unwrap_or("sidebar")), Style::default().fg(styles::FG_MUTED)),
+        Span::styled("n/p", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" nav  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled("s", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" split  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled("?", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" help", Style::default().fg(styles::FG_MUTED)),
+    ]);
+
+    let header_line = Line::from(spans);
+    let header = Paragraph::new(vec![Line::from(""), header_line]);
+    frame.render_widget(header, area);
 }
 
 /// Render help overlay.
 pub fn render_help(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(50, 60, area);
+    let popup_area = centered_rect(55, 70, area);
 
     frame.render_widget(Clear, popup_area);
 
@@ -70,45 +214,66 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )),
         Line::from(""),
+        Line::from(Span::styled("  Navigation", styles::style_muted())),
         Line::from(vec![
-            Span::styled("  j/↓      ", Style::default().fg(styles::FG_ADDITION)),
+            Span::styled("  j/↓       ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Move down"),
         ]),
         Line::from(vec![
-            Span::styled("  k/↑      ", Style::default().fg(styles::FG_ADDITION)),
+            Span::styled("  k/↑       ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Move up"),
         ]),
         Line::from(vec![
-            Span::styled("  Enter    ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Jump to file"),
+            Span::styled("  g/G       ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Go to top/bottom"),
         ]),
         Line::from(vec![
-            Span::styled("  Tab      ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Toggle sidebar focus"),
+            Span::styled("  n/p       ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Next/previous file"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Actions", styles::style_muted())),
+        Line::from(vec![
+            Span::styled("  Enter     ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Select file / toggle directory"),
         ]),
         Line::from(vec![
-            Span::styled("  n        ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Next file"),
+            Span::styled("  Tab       ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Switch pane focus"),
         ]),
         Line::from(vec![
-            Span::styled("  p        ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Previous file"),
+            Span::styled("  /         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Focus filter input"),
         ]),
         Line::from(vec![
-            Span::styled("  g        ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Go to top"),
+            Span::styled("  v         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Mark file as viewed"),
         ]),
         Line::from(vec![
-            Span::styled("  G        ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Go to bottom"),
+            Span::styled("  c         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Collapse/expand file"),
         ]),
         Line::from(vec![
-            Span::styled("  q        ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Quit"),
+            Span::styled("  s         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Toggle split/unified view"),
         ]),
         Line::from(vec![
-            Span::styled("  ?        ", Style::default().fg(styles::FG_ADDITION)),
+            Span::styled("  b         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Toggle sidebar"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Refresh (reload git changes)"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  General", styles::style_muted())),
+        Line::from(vec![
+            Span::styled("  ?         ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Toggle help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q/Esc     ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Quit / close"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -117,24 +282,20 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
         )),
     ];
 
-    let help = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .title(" Help ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(styles::FG_MUTED))
-                .padding(Padding::uniform(1))
-                .style(Style::default().bg(styles::BG_SIDEBAR)),
-        );
+    let help = Paragraph::new(help_text).block(
+        Block::default()
+            .title(" Help ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(styles::FG_MUTED))
+            .padding(Padding::uniform(1))
+            .style(Style::default().bg(styles::BG_SIDEBAR)),
+    );
 
     frame.render_widget(help, popup_area);
 }
 
-/// Render an error or empty state.
+/// Render an empty state.
 pub fn render_empty(frame: &mut Frame, area: Rect, message: &str, branch: &str, base: &str) {
-    let bg_block = Block::default().style(styles::style_default());
-    frame.render_widget(bg_block, area);
-
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(

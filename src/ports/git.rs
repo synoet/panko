@@ -9,6 +9,9 @@ use anyhow::Result;
 /// Port for git repository operations.
 /// Implementations may use git2, shell commands, or test fakes.
 pub trait GitRepo {
+    /// Get the repository root path (for identification/keying state).
+    fn repo_path(&self) -> Result<String>;
+
     /// Get the current branch name.
     fn current_branch(&self) -> Result<String>;
 
@@ -28,4 +31,7 @@ pub trait GitRepo {
 
     /// Get the diff for a single commit.
     fn commit_diff(&self, commit_hash: &str) -> Result<Diff>;
+
+    /// Get working directory path for file watching.
+    fn workdir(&self) -> Result<std::path::PathBuf>;
 }

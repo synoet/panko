@@ -9,9 +9,18 @@ mod domain;
 mod ports;
 mod ui;
 
-use adapters::{CrosstermTerminal, Git2Repo};
+use adapters::{CrosstermTerminal, Git2Repo, NotifyFileWatcher, SqliteStateStore};
 use anyhow::{Context, Result};
 use clap::Parser;
+use ports::GitRepo;
+use crossterm::{
+    event::DisableMouseCapture,
+    execute,
+    terminal::{disable_raw_mode, LeaveAlternateScreen},
+};
+use std::io;
+use std::panic;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "rev")]
@@ -28,6 +37,16 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    // Set up panic hook to restore terminal on panic
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // Restore terminal state
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        // Call original panic hook
+        original_hook(panic_info);
+    }));
+
     let args = Args::parse();
 
     // Open git repo
@@ -38,11 +57,33 @@ fn main() -> Result<()> {
     }
     .context("Failed to open git repository. Are you in a git directory?")?;
 
+    // Initialize state store (SQLite for persisting viewed files)
+    let state_store: Option<Arc<dyn ports::StateStore>> =
+        match SqliteStateStore::new() {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                eprintln!("Warning: Could not initialize state store: {}. Viewed state will not persist.", e);
+                None
+            }
+        };
+
+    // Initialize file watcher
+    let file_watcher: Option<Box<dyn ports::FileWatcher>> = match git.workdir() {
+        Ok(workdir) => match NotifyFileWatcher::new(&workdir) {
+            Ok(watcher) => Some(Box::new(watcher)),
+            Err(e) => {
+                eprintln!("Warning: Could not initialize file watcher: {}", e);
+                None
+            }
+        },
+        Err(_) => None,
+    };
+
     // Initialize terminal
     let mut terminal = CrosstermTerminal::new().context("Failed to initialize terminal")?;
 
     // Create and run app
-    let mut app = app::App::new(&git, args.base.as_deref())
+    let mut app = app::App::new(&git, args.base.as_deref(), state_store, file_watcher)
         .context("Failed to initialize app. Do you have commits ahead of the base branch?")?;
 
     let result = app.run(&mut terminal, &git);
@@ -51,4 +92,3 @@ fn main() -> Result<()> {
 
     result
 }
-// test
