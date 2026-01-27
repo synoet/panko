@@ -1,6 +1,8 @@
 //! Git repository port (trait).
 //! Defines the interface for git operations without coupling to any implementation.
 
+#![allow(dead_code)]
+
 use crate::domain::{Commit, Diff};
 use anyhow::Result;
 

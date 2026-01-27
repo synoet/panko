@@ -1,6 +1,8 @@
 //! Pure data types for the branch preview domain.
 //! No I/O, no dependencies on external crates beyond std.
 
+#![allow(dead_code)]
+
 use std::fmt;
 
 /// A git commit with metadata.

@@ -1,38 +1,39 @@
 //! Application state machine.
-//! Uses trait objects for git, generics for terminal (due to dyn-compatibility).
 
 use crate::domain::{BranchPreview, Diff};
 use crate::ports::{GitRepo, KeyCode, KeyModifiers, Terminal, TerminalEvent};
-use crate::ui;
+use crate::ui::{diff_view, file_tree, layout};
 use anyhow::Result;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::widgets::{ListState, TableState};
+use ratatui::widgets::ListState;
 use std::time::Duration;
 
-/// Current view in the application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum View {
-    Commits,
-    CommitDetail { commit_index: usize },
-    FullDiff,
-    FileDiff { file_index: usize },
+/// Current view mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Normal,
     Help,
+}
+
+/// Which pane has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    FileTree,
+    DiffView,
 }
 
 /// Application state.
 pub struct App {
     pub preview: BranchPreview,
-    pub full_diff: Diff,
-    pub commit_diffs: Vec<Option<Diff>>,
-    pub view: View,
-    pub previous_view: Option<View>,
-    pub selected_commit: usize,
-    pub selected_file: usize,
+    pub diff: Diff,
+    pub flat_items: Vec<file_tree::FlatItem>,
+    pub diff_lines: Vec<diff_view::DiffViewLine>,
+    pub mode: ViewMode,
+    pub focus: Focus,
+    pub selected_tree_item: usize,
+    pub current_file_index: usize,
     pub scroll: usize,
-    pub file_scroll: usize,
     pub should_quit: bool,
-    pub table_state: TableState,
-    pub list_state: ListState,
+    pub tree_state: ListState,
 }
 
 impl App {
@@ -44,9 +45,12 @@ impl App {
 
         let merge_base = git.merge_base(&base_branch)?;
         let commits = git.commits_since(&merge_base)?;
-        let full_diff = git.diff_to_base(&merge_base)?;
+        let diff = git.diff_to_base(&merge_base)?;
 
-        let commit_diffs = vec![None; commits.len()];
+        // Build UI data structures
+        let tree_nodes = file_tree::build_tree(&diff);
+        let flat_items = file_tree::flatten_tree(&tree_nodes);
+        let diff_lines = diff_view::build_diff_lines(&diff);
 
         Ok(Self {
             preview: BranchPreview {
@@ -55,308 +59,204 @@ impl App {
                 merge_base,
                 commits,
             },
-            full_diff,
-            commit_diffs,
-            view: View::Commits,
-            previous_view: None,
-            selected_commit: 0,
-            selected_file: 0,
+            diff,
+            flat_items,
+            diff_lines,
+            mode: ViewMode::Normal,
+            focus: Focus::DiffView,
+            selected_tree_item: 0,
+            current_file_index: 0,
             scroll: 0,
-            file_scroll: 0,
             should_quit: false,
-            table_state: TableState::default(),
-            list_state: ListState::default(),
+            tree_state: ListState::default(),
         })
     }
 
-    pub fn run<T: Terminal>(&mut self, terminal: &mut T, git: &dyn GitRepo) -> Result<()> {
+    pub fn run<T: Terminal>(&mut self, terminal: &mut T, _git: &dyn GitRepo) -> Result<()> {
         while !self.should_quit {
             self.draw(terminal)?;
 
-            if let Some(event) = terminal.poll_event(Duration::from_millis(100))? {
-                self.handle_event(event, git)?;
+            if let Some(event) = terminal.poll_event(Duration::from_millis(50))? {
+                self.handle_event(event)?;
             }
         }
         Ok(())
     }
 
     fn draw<T: Terminal>(&mut self, terminal: &mut T) -> Result<()> {
-        let preview = &self.preview;
-        let full_diff = &self.full_diff;
-        let view = &self.view;
-        let selected_commit = self.selected_commit;
-        let selected_file = self.selected_file;
+        let diff = &self.diff;
+        let flat_items = &self.flat_items;
+        let diff_lines = &self.diff_lines;
+        let selected_tree_item = self.selected_tree_item;
+        let current_file_index = self.current_file_index;
         let scroll = self.scroll;
-        let file_scroll = self.file_scroll;
-        let table_state = &mut self.table_state;
-        let list_state = &mut self.list_state;
-        let commit_diffs = &self.commit_diffs;
+        let branch = &self.preview.current_branch;
+        let base = &self.preview.base_branch;
+        let mode = self.mode;
+        let tree_state = &mut self.tree_state;
 
         terminal.draw(|frame| {
             let area = frame.area();
 
-            match view {
-                View::Commits => {
-                    let chunks = Layout::default()
-                        .direction(ratatui::layout::Direction::Vertical)
-                        .constraints([Constraint::Min(1), Constraint::Length(1)])
-                        .split(area);
+            if diff.files.is_empty() {
+                layout::render_empty(frame, area, "No changes found", branch, base);
+            } else {
+                layout::render_main(
+                    frame,
+                    area,
+                    diff,
+                    flat_items,
+                    diff_lines,
+                    selected_tree_item,
+                    current_file_index,
+                    scroll,
+                    branch,
+                    base,
+                    tree_state,
+                );
+            }
 
-                    ui::commits::render(
-                        frame,
-                        chunks[0],
-                        &preview.commits,
-                        selected_commit,
-                        &preview.current_branch,
-                        &preview.base_branch,
-                        table_state,
-                    );
-                    ui::commits::render_help(frame, chunks[1]);
-                }
-
-                View::CommitDetail { commit_index } => {
-                    if let Some(commit) = preview.commits.get(*commit_index) {
-                        let empty_diff = Diff::default();
-                        let diff = commit_diffs
-                            .get(*commit_index)
-                            .and_then(|d| d.as_ref())
-                            .unwrap_or(&empty_diff);
-
-                        ui::diff::render_commit_detail(
-                            frame,
-                            area,
-                            commit,
-                            diff,
-                            selected_file,
-                            list_state,
-                        );
-                    }
-                }
-
-                View::FullDiff => {
-                    ui::diff::render_full_diff(
-                        frame,
-                        area,
-                        full_diff,
-                        &preview.current_branch,
-                        &preview.base_branch,
-                        scroll,
-                        selected_file,
-                    );
-                }
-
-                View::FileDiff { file_index } => {
-                    if let Some(file) = full_diff.files.get(*file_index) {
-                        ui::diff::render_file_diff(frame, area, file, file_scroll);
-                    }
-                }
-
-                View::Help => {
-                    // Render underlying view first
-                    let chunks = Layout::default()
-                        .direction(ratatui::layout::Direction::Vertical)
-                        .constraints([Constraint::Min(1), Constraint::Length(1)])
-                        .split(area);
-
-                    ui::commits::render(
-                        frame,
-                        chunks[0],
-                        &preview.commits,
-                        selected_commit,
-                        &preview.current_branch,
-                        &preview.base_branch,
-                        table_state,
-                    );
-                    ui::commits::render_help(frame, chunks[1]);
-
-                    // Overlay help
-                    ui::help::render(frame, area);
-                }
+            if mode == ViewMode::Help {
+                layout::render_help(frame, area);
             }
         })
     }
 
-    fn handle_event(&mut self, event: TerminalEvent, git: &dyn GitRepo) -> Result<()> {
+    fn handle_event(&mut self, event: TerminalEvent) -> Result<()> {
         match event {
-            TerminalEvent::Key(key) => self.handle_key(key.code, key.modifiers, git),
+            TerminalEvent::Key(key) => self.handle_key(key.code, key.modifiers),
             TerminalEvent::Resize(_, _) => Ok(()),
         }
     }
 
-    fn handle_key(
-        &mut self,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        git: &dyn GitRepo,
-    ) -> Result<()> {
-        // Global quit
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        // Global keys
         if code == KeyCode::Char('q') && !modifiers.ctrl {
             self.should_quit = true;
             return Ok(());
         }
 
-        // Ctrl+C quit
         if code == KeyCode::Char('c') && modifiers.ctrl {
             self.should_quit = true;
             return Ok(());
         }
 
-        // Help toggle (except when already in help)
-        if code == KeyCode::Char('?') && self.view != View::Help {
-            self.previous_view = Some(self.view.clone());
-            self.view = View::Help;
+        // Help mode
+        if self.mode == ViewMode::Help {
+            self.mode = ViewMode::Normal;
             return Ok(());
         }
 
-        match &self.view {
-            View::Help => {
-                // Any key closes help
-                if let Some(prev) = self.previous_view.take() {
-                    self.view = prev;
-                } else {
-                    self.view = View::Commits;
-                }
-            }
-
-            View::Commits => match code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.selected_commit < self.preview.commits.len().saturating_sub(1) {
-                        self.selected_commit += 1;
-                    }
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.selected_commit = self.selected_commit.saturating_sub(1);
-                }
-                KeyCode::Char('g') => {
-                    self.selected_commit = 0;
-                }
-                KeyCode::Char('G') => {
-                    self.selected_commit = self.preview.commits.len().saturating_sub(1);
-                }
-                KeyCode::PageDown => {
-                    self.selected_commit = (self.selected_commit + 10)
-                        .min(self.preview.commits.len().saturating_sub(1));
-                }
-                KeyCode::PageUp => {
-                    self.selected_commit = self.selected_commit.saturating_sub(10);
-                }
-                KeyCode::Enter => {
-                    // Load commit diff if not cached
-                    if self.commit_diffs[self.selected_commit].is_none() {
-                        let commit = &self.preview.commits[self.selected_commit];
-                        if let Ok(diff) = git.commit_diff(&commit.hash) {
-                            self.commit_diffs[self.selected_commit] = Some(diff);
-                        }
-                    }
-                    self.selected_file = 0;
-                    self.view = View::CommitDetail {
-                        commit_index: self.selected_commit,
-                    };
-                }
-                KeyCode::Char('d') => {
-                    self.scroll = 0;
-                    self.selected_file = 0;
-                    self.view = View::FullDiff;
-                }
-                _ => {}
-            },
-
-            View::CommitDetail { commit_index } => {
-                let commit_index = *commit_index;
-                let file_count = self
-                    .commit_diffs
-                    .get(commit_index)
-                    .and_then(|d| d.as_ref())
-                    .map(|d| d.files.len())
-                    .unwrap_or(0);
-
-                match code {
-                    KeyCode::Esc => {
-                        self.view = View::Commits;
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if self.selected_file < file_count.saturating_sub(1) {
-                            self.selected_file += 1;
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.selected_file = self.selected_file.saturating_sub(1);
-                    }
-                    KeyCode::Enter => {
-                        // View file diff from commit
-                        self.file_scroll = 0;
-                        self.view = View::FileDiff {
-                            file_index: self.selected_file,
-                        };
-                    }
-                    _ => {}
-                }
-            }
-
-            View::FullDiff => match code {
-                KeyCode::Esc => {
-                    self.view = View::Commits;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.scroll += 1;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.scroll = self.scroll.saturating_sub(1);
-                }
-                KeyCode::PageDown => {
-                    self.scroll += 20;
-                }
-                KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(20);
-                }
-                KeyCode::Char('n') => {
-                    if self.selected_file < self.full_diff.files.len().saturating_sub(1) {
-                        self.selected_file += 1;
-                        // Jump scroll to file (approximate)
-                        self.scroll = self.selected_file * 20;
-                    }
-                }
-                KeyCode::Char('p') => {
-                    self.selected_file = self.selected_file.saturating_sub(1);
-                    self.scroll = self.selected_file * 20;
-                }
-                KeyCode::Char('g') => {
-                    self.scroll = 0;
-                    self.selected_file = 0;
-                }
-                KeyCode::Char('G') => {
-                    self.selected_file = self.full_diff.files.len().saturating_sub(1);
-                    self.scroll = self.selected_file * 20;
-                }
-                _ => {}
-            },
-
-            View::FileDiff { .. } => match code {
-                KeyCode::Esc => {
-                    self.view = View::CommitDetail {
-                        commit_index: self.selected_commit,
-                    };
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.file_scroll += 1;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.file_scroll = self.file_scroll.saturating_sub(1);
-                }
-                KeyCode::PageDown => {
-                    self.file_scroll += 20;
-                }
-                KeyCode::PageUp => {
-                    self.file_scroll = self.file_scroll.saturating_sub(20);
-                }
-                KeyCode::Char('g') => {
-                    self.file_scroll = 0;
-                }
-                _ => {}
-            },
+        if code == KeyCode::Char('?') {
+            self.mode = ViewMode::Help;
+            return Ok(());
         }
 
+        // Tab to switch focus
+        if code == KeyCode::Tab {
+            self.focus = match self.focus {
+                Focus::FileTree => Focus::DiffView,
+                Focus::DiffView => Focus::FileTree,
+            };
+            return Ok(());
+        }
+
+        match self.focus {
+            Focus::FileTree => self.handle_tree_key(code),
+            Focus::DiffView => self.handle_diff_key(code),
+        }
+    }
+
+    fn handle_tree_key(&mut self, code: KeyCode) -> Result<()> {
+        let max_item = self.flat_items.len().saturating_sub(1);
+
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.selected_tree_item < max_item {
+                    self.selected_tree_item += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected_tree_item = self.selected_tree_item.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.flat_items.get(self.selected_tree_item) {
+                    if let Some(file_idx) = item.file_index {
+                        self.current_file_index = file_idx;
+                        self.scroll = diff_view::find_file_start(&self.diff_lines, file_idx);
+                        self.focus = Focus::DiffView;
+                    }
+                }
+            }
+            KeyCode::Char('g') => {
+                self.selected_tree_item = 0;
+            }
+            KeyCode::Char('G') => {
+                self.selected_tree_item = max_item;
+            }
+            _ => {}
+        }
         Ok(())
+    }
+
+    fn handle_diff_key(&mut self, code: KeyCode) -> Result<()> {
+        let max_scroll = self.diff_lines.len().saturating_sub(1);
+        let file_count = self.diff.files.len();
+
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.scroll < max_scroll {
+                    self.scroll += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.scroll = self.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                self.scroll = (self.scroll + 20).min(max_scroll);
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(20);
+            }
+            KeyCode::Char('n') => {
+                // Next file
+                if self.current_file_index < file_count.saturating_sub(1) {
+                    self.current_file_index += 1;
+                    self.scroll = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.sync_tree_selection();
+                }
+            }
+            KeyCode::Char('p') => {
+                // Previous file
+                if self.current_file_index > 0 {
+                    self.current_file_index -= 1;
+                    self.scroll = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.sync_tree_selection();
+                }
+            }
+            KeyCode::Char('g') => {
+                self.scroll = 0;
+                self.current_file_index = 0;
+                self.sync_tree_selection();
+            }
+            KeyCode::Char('G') => {
+                self.scroll = max_scroll;
+                self.current_file_index = file_count.saturating_sub(1);
+                self.sync_tree_selection();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn sync_tree_selection(&mut self) {
+        // Find the flat_items index that corresponds to current_file_index
+        for (i, item) in self.flat_items.iter().enumerate() {
+            if item.file_index == Some(self.current_file_index) {
+                self.selected_tree_item = i;
+                break;
+            }
+        }
     }
 }
 
@@ -384,14 +284,6 @@ mod tests {
                         hash: "def456".to_string(),
                         short_hash: "def456".to_string(),
                         message: "Add feature".to_string(),
-                        author: "Test".to_string(),
-                        email: "test@example.com".to_string(),
-                        timestamp: 0,
-                    },
-                    Commit {
-                        hash: "ghi789".to_string(),
-                        short_hash: "ghi789".to_string(),
-                        message: "Fix bug".to_string(),
                         author: "Test".to_string(),
                         email: "test@example.com".to_string(),
                         timestamp: 0,
@@ -447,74 +339,25 @@ mod tests {
     }
 
     #[test]
-    fn test_app_initializes_with_commits_view() {
+    fn test_app_initializes() {
         let git = FakeGitRepo::new();
         let app = App::new(&git, None).unwrap();
-        assert_eq!(app.view, View::Commits);
-        assert_eq!(app.preview.commits.len(), 2);
+        assert_eq!(app.mode, ViewMode::Normal);
+        assert!(!app.diff.files.is_empty());
     }
 
     #[test]
-    fn test_navigate_down_in_commits() {
+    fn test_navigate_diff() {
         let git = FakeGitRepo::new();
         let mut app = App::new(&git, None).unwrap();
-        assert_eq!(app.selected_commit, 0);
+        app.focus = Focus::DiffView;
+        assert_eq!(app.scroll, 0);
 
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.selected_commit, 1);
+        app.handle_key(KeyCode::Down, KeyModifiers::default()).unwrap();
+        assert_eq!(app.scroll, 1);
 
-        // Should not go past last commit
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.selected_commit, 1);
-    }
-
-    #[test]
-    fn test_navigate_up_in_commits() {
-        let git = FakeGitRepo::new();
-        let mut app = App::new(&git, None).unwrap();
-        app.selected_commit = 1;
-
-        app.handle_key(KeyCode::Up, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.selected_commit, 0);
-
-        // Should not go below 0
-        app.handle_key(KeyCode::Up, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.selected_commit, 0);
-    }
-
-    #[test]
-    fn test_enter_commit_detail() {
-        let git = FakeGitRepo::new();
-        let mut app = App::new(&git, None).unwrap();
-
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.view, View::CommitDetail { commit_index: 0 });
-    }
-
-    #[test]
-    fn test_enter_full_diff() {
-        let git = FakeGitRepo::new();
-        let mut app = App::new(&git, None).unwrap();
-
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.view, View::FullDiff);
-    }
-
-    #[test]
-    fn test_escape_returns_to_commits() {
-        let git = FakeGitRepo::new();
-        let mut app = App::new(&git, None).unwrap();
-        app.view = View::FullDiff;
-
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.view, View::Commits);
+        app.handle_key(KeyCode::Up, KeyModifiers::default()).unwrap();
+        assert_eq!(app.scroll, 0);
     }
 
     #[test]
@@ -523,8 +366,7 @@ mod tests {
         let mut app = App::new(&git, None).unwrap();
         assert!(!app.should_quit);
 
-        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &git)
-            .unwrap();
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::default()).unwrap();
         assert!(app.should_quit);
     }
 
@@ -533,13 +375,10 @@ mod tests {
         let git = FakeGitRepo::new();
         let mut app = App::new(&git, None).unwrap();
 
-        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.view, View::Help);
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::default()).unwrap();
+        assert_eq!(app.mode, ViewMode::Help);
 
-        // Any key closes help
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE, &git)
-            .unwrap();
-        assert_eq!(app.view, View::Commits);
+        app.handle_key(KeyCode::Esc, KeyModifiers::default()).unwrap();
+        assert_eq!(app.mode, ViewMode::Normal);
     }
 }

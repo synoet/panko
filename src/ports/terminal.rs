@@ -1,6 +1,8 @@
 //! Terminal port (trait).
 //! Defines the interface for terminal operations without coupling to crossterm/ratatui.
 
+#![allow(dead_code)]
+
 use anyhow::Result;
 use ratatui::Frame;
 use std::time::Duration;

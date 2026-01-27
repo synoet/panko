@@ -1,3 +1,4 @@
-pub mod commits;
-pub mod diff;
-pub mod help;
+pub mod layout;
+pub mod file_tree;
+pub mod diff_view;
+pub mod styles;

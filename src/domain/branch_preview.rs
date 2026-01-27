@@ -1,6 +1,8 @@
 //! Pure business logic for branch previews.
 //! No I/O - all functions are data in, data out.
 
+#![allow(dead_code)]
+
 use super::types::{BranchPreview, Commit, Diff, DiffStats};
 
 /// Filter commits by search term (case-insensitive).
