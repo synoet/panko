@@ -603,13 +603,17 @@ pub fn find_file_start(lines: &[DiffViewLine], file_index: usize) -> usize {
 }
 
 /// Apply visual selection highlight to a line.
+/// Uses brighter backgrounds that are visible on diff lines.
 fn apply_visual_selection_highlight(mut line: Line<'static>) -> Line<'static> {
-    // Add a subtle background tint to indicate selection
     for span in line.spans.iter_mut() {
-        // Add subtle selection background
-        if span.style.bg.is_none() {
-            span.style = span.style.bg(styles::BG_SELECTED);
-        }
+        // Map current background to brighter selection variant
+        let new_bg = match span.style.bg {
+            Some(styles::BG_ADDITION_LINE) => styles::BG_ADDITION_SELECTED,
+            Some(styles::BG_DELETION_LINE) => styles::BG_DELETION_SELECTED,
+            Some(styles::BG_DEFAULT) | None => styles::BG_CONTEXT_SELECTED,
+            Some(other) => other, // Keep special backgrounds (word highlights, etc.)
+        };
+        span.style = span.style.bg(new_bg);
     }
     line
 }
@@ -951,6 +955,9 @@ pub fn render_unified(
         let line = &lines[line_idx];
         let absolute_line_idx = line_idx;
 
+        // Check if this line is the cursor line
+        let is_cursor_line = absolute_line_idx == cursor;
+
         // Check if this line is part of visual selection
         let is_selected = visual_selection
             .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
@@ -970,7 +977,10 @@ pub fn render_unified(
             .unwrap_or(false);
 
         // Prepend gutter (always present for consistent layout)
-        let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+        // Priority: cursor > uncommitted > visual selection > default
+        let gutter_style = if is_cursor_line {
+            Style::default().fg(styles::FG_CURSOR)
+        } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::FG_WARNING)
         } else if is_selected {
             Style::default().fg(styles::FG_HUNK)
@@ -978,7 +988,9 @@ pub fn render_unified(
             Style::default().fg(styles::FG_BORDER)
         };
 
-        let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+        let gutter_char = if is_cursor_line {
+            "▶ " // Cursor line indicator (arrow)
+        } else if diff_source == DiffSource::All && is_uncommitted {
             "▎ " // Orange bar for uncommitted
         } else if is_selected {
             "▌ " // Visual selection indicator
@@ -1102,6 +1114,9 @@ pub fn render_split(
         let line = &lines[line_idx];
         let absolute_line_idx = line_idx;
 
+        // Check if this line is the cursor line
+        let is_cursor_line = absolute_line_idx == cursor;
+
         // Check if this line is part of visual selection
         let is_selected = visual_selection
             .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
@@ -1121,7 +1136,10 @@ pub fn render_split(
             .unwrap_or(false);
 
         // Prepend gutter (always present for consistent layout)
-        let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+        // Priority: cursor > uncommitted > visual selection > default
+        let gutter_style = if is_cursor_line {
+            Style::default().fg(styles::FG_CURSOR)
+        } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::FG_WARNING)
         } else if is_selected {
             Style::default().fg(styles::FG_HUNK)
@@ -1129,7 +1147,9 @@ pub fn render_split(
             Style::default().fg(styles::FG_BORDER)
         };
 
-        let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+        let gutter_char = if is_cursor_line {
+            "▶ " // Cursor line indicator (arrow)
+        } else if diff_source == DiffSource::All && is_uncommitted {
             "▎ " // Orange bar for uncommitted
         } else if is_selected {
             "▌ " // Visual selection indicator

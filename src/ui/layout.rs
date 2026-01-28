@@ -1,6 +1,6 @@
 //! Main layout orchestrating file tree and diff view.
 
-use crate::app::DiffSource;
+use crate::app::{DiffSource, Focus};
 use crate::domain::{Comment, Diff};
 use crate::ui::{diff_view, file_tree, styles};
 use ratatui::{
@@ -41,11 +41,16 @@ pub fn render_main(
     visual_selection: Option<(usize, usize)>,
     focused_comment: Option<i64>,
     draft_comment: Option<&(String, usize, usize, String)>, // (file_path, start, end, body)
+    focus: Focus,
 ) {
-    // Split into header and main content area (with padding below header)
+    // Split into header, main content, and status bar
     let vertical_chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Min(1),     // Content
+            Constraint::Length(1),  // Status bar
+        ])
         .split(area);
 
     // Render full-width header
@@ -177,6 +182,93 @@ pub fn render_main(
             }
         }
     }
+
+    // Render status bar at the bottom
+    render_status_bar(frame, vertical_chunks[2], focus, sidebar_collapsed, show_comments, focused_comment);
+}
+
+/// Render the persistent status bar with contextual hotkeys.
+fn render_status_bar(
+    frame: &mut Frame,
+    area: Rect,
+    focus: Focus,
+    sidebar_collapsed: bool,
+    show_comments: bool,
+    focused_comment: Option<i64>,
+) {
+    let mut spans = Vec::new();
+
+    // Mode indicator
+    let mode_text = match focus {
+        Focus::FileTree => " FILES ",
+        Focus::DiffView => " DIFF ",
+        Focus::FilterInput => " FILTER ",
+    };
+    spans.push(Span::styled(
+        mode_text,
+        Style::default().fg(styles::BG_DEFAULT).bg(styles::FG_HUNK).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
+
+    // Context-specific hotkeys
+    match focus {
+        Focus::FileTree => {
+            add_hotkey(&mut spans, "j/k", "navigate");
+            add_hotkey(&mut spans, "Enter", "jump to file");
+            add_hotkey(&mut spans, "Tab", "switch to diff");
+            add_hotkey(&mut spans, "/", "filter");
+        }
+        Focus::DiffView => {
+            add_hotkey(&mut spans, "j/k", "navigate");
+            if focused_comment.is_some() {
+                add_hotkey(&mut spans, "R", "resolve");
+            } else {
+                add_hotkey(&mut spans, "V", "visual select");
+                add_hotkey(&mut spans, "c", "comment");
+            }
+            add_hotkey(&mut spans, "x", "mark viewed");
+            add_hotkey(&mut spans, "n/p", "next/prev file");
+            if !sidebar_collapsed {
+                add_hotkey(&mut spans, "Tab", "switch to files");
+            }
+        }
+        Focus::FilterInput => {
+            add_hotkey(&mut spans, "Enter", "apply");
+            add_hotkey(&mut spans, "Esc", "cancel");
+        }
+    }
+
+    // Always show these
+    spans.push(Span::raw(" "));
+    add_hotkey(&mut spans, "?", "help");
+    add_hotkey(&mut spans, "q", "quit");
+
+    // Toggle indicators on the right
+    let mut right_spans = Vec::new();
+    if show_comments {
+        right_spans.push(Span::styled(" ● comments ", Style::default().fg(styles::FG_ADDITION)));
+    }
+    if sidebar_collapsed {
+        right_spans.push(Span::styled(" ◀ sidebar ", Style::default().fg(styles::FG_MUTED)));
+    }
+
+    // Calculate padding to right-align the toggle indicators
+    let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let padding = (area.width as usize).saturating_sub(left_width + right_width);
+
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.extend(right_spans);
+
+    let status_line = Line::from(spans);
+    let para = Paragraph::new(status_line).style(Style::default().bg(styles::BG_HEADER));
+    frame.render_widget(para, area);
+}
+
+/// Helper to add a hotkey + description pair to spans.
+fn add_hotkey(spans: &mut Vec<Span<'static>>, key: &'static str, desc: &'static str) {
+    spans.push(Span::styled(key, Style::default().fg(styles::FG_HUNK)));
+    spans.push(Span::styled(format!(" {} ", desc), Style::default().fg(styles::FG_MUTED)));
 }
 
 /// Render comment input overlay.

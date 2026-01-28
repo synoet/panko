@@ -41,4 +41,7 @@ pub trait GitRepo {
 
     /// Get the diff from merge-base to working tree (committed + uncommitted).
     fn diff_to_workdir(&self, merge_base_hash: &str) -> Result<Diff>;
+
+    /// Get the configured git user name.
+    fn user_name(&self) -> Result<String>;
 }

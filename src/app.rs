@@ -97,6 +97,8 @@ pub struct App {
     pub comment_author: String,
     /// Currently focused comment (when navigating into a comment)
     pub focused_comment: Option<i64>,
+    /// Last known viewport height (updated during render)
+    pub viewport_height: usize,
 }
 
 impl App {
@@ -165,6 +167,7 @@ impl App {
             comment_file_path: None,
             comment_author: Self::get_git_author(git),
             focused_comment: None,
+            viewport_height: 30, // Default, updated during render
         })
     }
 
@@ -327,6 +330,12 @@ impl App {
     }
 
     fn draw<T: Terminal>(&mut self, terminal: &mut T) -> Result<()> {
+        // Update viewport height from terminal size
+        // Subtract: header (3) + status bar (1) + sticky header (1) + margin (1)
+        if let Ok((_, height)) = terminal.size() {
+            self.viewport_height = (height as usize).saturating_sub(6);
+        }
+
         // Compute visual_selection first (before any mutable borrows)
         // In normal mode, show cursor as a single-line "selection"
         let visual_selection = match self.mode {
@@ -356,8 +365,8 @@ impl App {
         let uncommitted_files = &self.uncommitted_files;
         let comments = &self.comments;
         let show_comments = self.show_comments;
-        let comment_input = &self.comment_input;
         let focused_comment = self.focused_comment;
+        let focus = self.focus;
 
         // Build draft comment for inline rendering during comment input mode
         let draft_comment = if mode == ViewMode::CommentInput {
@@ -402,6 +411,7 @@ impl App {
                     visual_selection,
                     focused_comment,
                     draft_comment.as_ref(),
+                    focus,
                 );
             }
 
@@ -432,13 +442,22 @@ impl App {
 
         let scroll_amount = 3; // Lines to scroll per mouse wheel tick
         let max_scroll = self.diff_lines.len().saturating_sub(1);
+        let vh = self.viewport_height.max(5);
 
         match event {
             MouseEvent::ScrollUp => {
                 self.scroll = self.scroll.saturating_sub(scroll_amount);
+                // Keep cursor in view - if cursor is now below viewport, move it up
+                if self.cursor >= self.scroll + vh {
+                    self.cursor = (self.scroll + vh).saturating_sub(1);
+                }
             }
             MouseEvent::ScrollDown => {
                 self.scroll = (self.scroll + scroll_amount).min(max_scroll);
+                // Keep cursor in view - if cursor is now above viewport, move it down
+                if self.cursor < self.scroll {
+                    self.cursor = self.scroll;
+                }
             }
         }
         Ok(())
@@ -976,18 +995,41 @@ impl App {
         }
     }
 
-    /// Ensure the cursor is visible in the viewport.
+    /// Ensure the cursor is visible in the viewport with scroll margin.
     fn ensure_cursor_visible(&mut self) {
-        // Use a reasonable viewport height estimate (will be approximate until we have frame size)
-        let viewport_height = 30;
+        // Use stored viewport height (updated during render)
+        let base_vh = self.viewport_height.max(5);
+
+        // Subtract lines taken by comments in the visible range
+        let comment_lines = if self.show_comments {
+            self.estimate_comment_lines(self.scroll, self.scroll + base_vh)
+        } else {
+            0
+        };
+        let vh = base_vh.saturating_sub(comment_lines).max(5);
 
         if self.cursor < self.scroll {
-            // Cursor above viewport
+            // Cursor above viewport - scroll up
             self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + viewport_height {
-            // Cursor below viewport
-            self.scroll = self.cursor.saturating_sub(viewport_height - 1);
+        } else if self.cursor + 2 >= self.scroll + vh {
+            // Cursor at or near bottom (1 line margin) - scroll down
+            self.scroll = (self.cursor + 2).saturating_sub(vh);
         }
+    }
+
+    /// Estimate how many screen lines comments take in a given diff line range.
+    fn estimate_comment_lines(&self, start: usize, end: usize) -> usize {
+        let mut total = 0;
+        for comment in &self.comments {
+            // Comment renders after its end_line
+            if comment.end_line >= start && comment.end_line < end {
+                // Estimate: header(1) + author(1) + body(~2-3) + bottom(1) + replies
+                let body_lines = (comment.body.len() / 60).max(1); // rough wrap estimate
+                let reply_lines = comment.replies.len() * 2; // ~2 lines per reply
+                total += 4 + body_lines + reply_lines;
+            }
+        }
+        total
     }
 
     fn sync_tree_selection(&mut self) {
@@ -1090,6 +1132,10 @@ mod tests {
         fn diff_to_workdir(&self, _merge_base: &str) -> Result<Diff> {
             Ok(self.diff.clone())
         }
+
+        fn user_name(&self) -> Result<String> {
+            Ok("Test User".to_string())
+        }
     }
 
     #[test]
@@ -1105,13 +1151,13 @@ mod tests {
         let git = FakeGitRepo::new();
         let mut app = App::new(&git, None, None, None).unwrap();
         app.focus = Focus::DiffView;
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.cursor, 0);
 
         app.handle_key(KeyCode::Down, KeyModifiers::default(), &git).unwrap();
-        assert_eq!(app.scroll, 1);
+        assert_eq!(app.cursor, 1);
 
         app.handle_key(KeyCode::Up, KeyModifiers::default(), &git).unwrap();
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.cursor, 0);
     }
 
     #[test]

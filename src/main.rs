@@ -11,8 +11,8 @@ mod ui;
 
 use adapters::{CrosstermTerminal, Git2Repo, NotifyFileWatcher, SqliteStateStore};
 use anyhow::{Context, Result};
-use clap::Parser;
-use ports::GitRepo;
+use clap::{Parser, Subcommand};
+use ports::{GitRepo, StateStore};
 use crossterm::{
     event::DisableMouseCapture,
     execute,
@@ -28,25 +28,54 @@ use std::sync::Arc;
 #[command(version)]
 struct Args {
     /// Base branch to compare against (default: auto-detect main/master)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     base: Option<String>,
 
     /// Path to git repository (default: current directory)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     path: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// List all comments for the current branch (for AI agents)
+    Comments {
+        /// Output format: text (default) or json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Filter by status: all (default), open, resolved
+        #[arg(short, long, default_value = "all")]
+        status: String,
+    },
+
+    /// Resolve a comment by ID (for AI agents)
+    Resolve {
+        /// Comment ID to resolve
+        id: i64,
+    },
+
+    /// Unresolve a comment by ID (for AI agents)
+    Unresolve {
+        /// Comment ID to unresolve
+        id: i64,
+    },
+
+    /// Reply to a comment (for AI agents)
+    Reply {
+        /// Comment ID to reply to
+        id: i64,
+
+        /// Reply message
+        #[arg(short, long)]
+        message: String,
+    },
 }
 
 fn main() -> Result<()> {
-    // Set up panic hook to restore terminal on panic
-    let original_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        // Restore terminal state
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
-        // Call original panic hook
-        original_hook(panic_info);
-    }));
-
     let args = Args::parse();
 
     // Open git repo
@@ -56,6 +85,21 @@ fn main() -> Result<()> {
         Git2Repo::open_current_dir()
     }
     .context("Failed to open git repository. Are you in a git directory?")?;
+
+    // Handle subcommands (CLI mode for agents)
+    if let Some(command) = args.command {
+        return run_cli_command(command, &git);
+    }
+
+    // TUI mode: set up panic hook to restore terminal on panic
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // Restore terminal state
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        // Call original panic hook
+        original_hook(panic_info);
+    }));
 
     // Initialize state store (SQLite for persisting viewed files)
     let state_store: Option<Arc<dyn ports::StateStore>> =
@@ -92,4 +136,146 @@ fn main() -> Result<()> {
 
     result
 }
-// test
+
+/// Run CLI commands (for AI agents)
+fn run_cli_command(command: Command, git: &Git2Repo) -> Result<()> {
+    let state_store = SqliteStateStore::new()
+        .context("Failed to initialize state store")?;
+
+    let repo_path = git.workdir()?.to_string_lossy().to_string();
+    let branch = git.current_branch()?;
+
+    match command {
+        Command::Comments { format, status } => {
+            let comments = state_store.get_comments(&repo_path, &branch)?;
+
+            let filtered: Vec<_> = comments
+                .iter()
+                .filter(|c| match status.as_str() {
+                    "open" => !c.resolved,
+                    "resolved" => c.resolved,
+                    _ => true, // "all"
+                })
+                .collect();
+
+            if format == "json" {
+                print_comments_json(&filtered);
+            } else {
+                print_comments_text(&filtered);
+            }
+        }
+
+        Command::Resolve { id } => {
+            state_store.resolve_comment(id)?;
+            println!("Resolved comment #{}", id);
+        }
+
+        Command::Unresolve { id } => {
+            state_store.unresolve_comment(id)?;
+            println!("Unresolved comment #{}", id);
+        }
+
+        Command::Reply { id, message } => {
+            let author = get_git_user(git);
+            let reply_id = state_store.add_reply(ports::NewReply {
+                comment_id: id,
+                body: message,
+                author,
+            })?;
+            println!("Added reply #{} to comment #{}", reply_id, id);
+        }
+    }
+
+    Ok(())
+}
+
+fn get_git_user(git: &Git2Repo) -> String {
+    git.user_name().unwrap_or_else(|_| "Agent".to_string())
+}
+
+fn print_comments_text(comments: &[&domain::Comment]) {
+    if comments.is_empty() {
+        println!("No comments found.");
+        return;
+    }
+
+    for comment in comments {
+        let status = if comment.resolved { "RESOLVED" } else { "OPEN" };
+        let status_icon = if comment.resolved { "✓" } else { "○" };
+
+        println!("{}──────────────────────────────────────", "");
+        println!("{} #{} [{}]", status_icon, comment.id, status);
+        println!("  File: {} {}", comment.file_path, comment.line_range_display());
+        println!("  Author: {} ({})", comment.author, comment.relative_time());
+        println!("  ");
+        for line in comment.body.lines() {
+            println!("  {}", line);
+        }
+
+        // Print replies
+        for reply in &comment.replies {
+            println!("  ");
+            println!("    ↳ {} ({})", reply.author, reply.relative_time());
+            for line in reply.body.lines() {
+                println!("      {}", line);
+            }
+        }
+    }
+    println!("──────────────────────────────────────");
+    println!("\nTotal: {} comment(s)", comments.len());
+}
+
+fn print_comments_json(comments: &[&domain::Comment]) {
+    // Simple JSON output without serde
+    println!("[");
+    for (i, comment) in comments.iter().enumerate() {
+        let replies_json: Vec<String> = comment
+            .replies
+            .iter()
+            .map(|r| {
+                format!(
+                    r#"    {{"id": {}, "author": "{}", "body": "{}", "created_at": {}}}"#,
+                    r.id,
+                    escape_json(&r.author),
+                    escape_json(&r.body),
+                    r.created_at
+                )
+            })
+            .collect();
+
+        println!(
+            r#"  {{
+    "id": {},
+    "file_path": "{}",
+    "start_line": {},
+    "end_line": {},
+    "body": "{}",
+    "author": "{}",
+    "created_at": {},
+    "resolved": {},
+    "replies": [
+{}
+    ]
+  }}{}"#,
+            comment.id,
+            escape_json(&comment.file_path),
+            comment.start_line,
+            comment.end_line,
+            escape_json(&comment.body),
+            escape_json(&comment.author),
+            comment.created_at,
+            comment.resolved,
+            replies_json.join(",\n"),
+            if i < comments.len() - 1 { "," } else { "" }
+        );
+    }
+    println!("]");
+}
+
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}

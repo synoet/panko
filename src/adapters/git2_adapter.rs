@@ -215,6 +215,13 @@ impl GitRepo for Git2Repo {
 
         parse_git2_diff(&diff)
     }
+
+    fn user_name(&self) -> Result<String> {
+        let config = self.repo.config()?;
+        config
+            .get_string("user.name")
+            .context("Git user.name not configured")
+    }
 }
 
 fn parse_git2_diff(diff: &git2::Diff) -> Result<Diff> {
