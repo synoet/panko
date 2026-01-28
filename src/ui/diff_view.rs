@@ -66,6 +66,26 @@ pub enum LineContent {
     Empty,
 }
 
+impl LineContent {
+    /// Get the new (right-side) line number if this is a code line.
+    pub fn new_line_num(&self) -> Option<u32> {
+        match self {
+            LineContent::UnifiedLine { new_num, .. } => *new_num,
+            LineContent::SplitLine { new_num, .. } => *new_num,
+            _ => None,
+        }
+    }
+
+    /// Get the old (left-side) line number if this is a code line.
+    pub fn old_line_num(&self) -> Option<u32> {
+        match self {
+            LineContent::UnifiedLine { old_num, .. } => *old_num,
+            LineContent::SplitLine { old_num, .. } => *old_num,
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     FileHeader,
@@ -801,41 +821,62 @@ fn render_draft_comment_box(
         Span::styled("│", Style::default().fg(border_color)),
     ]));
 
-    // Body input area with cursor
-    let body_display = if body.is_empty() {
-        "Type your comment...".to_string()
-    } else {
-        body.to_string()
-    };
+    // Body input area with cursor at end of text
+    let text_style = Style::default().fg(styles::FG_DEFAULT).bg(bg_color);
+    let placeholder_style = Style::default().fg(styles::FG_MUTED).bg(bg_color);
+    let max_content_width = inner_w.saturating_sub(2); // -2 for leading space and cursor
 
-    for body_line in wrap_text(&body_display, inner_w.saturating_sub(2)) {
-        let line_text = format!(" {}", body_line);
-        let pad_len = inner_w.saturating_sub(line_text.chars().count());
-
-        let text_style = if body.is_empty() {
-            Style::default().fg(styles::FG_MUTED).bg(bg_color)
-        } else {
-            Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
-        };
+    if body.is_empty() {
+        // Show placeholder with cursor at start
+        let placeholder = "Type your comment...";
+        let pad_len = inner_w.saturating_sub(1 + 1 + placeholder.chars().count()); // space + cursor + text
 
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(line_text, text_style),
+            Span::styled(" ", Style::default().bg(bg_color)),
+            Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+            Span::styled(placeholder, placeholder_style),
             Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
         ]));
-    }
+    } else {
+        // Split body into lines that fit, preserving all characters including trailing spaces
+        let body_chars: Vec<char> = body.chars().collect();
+        let mut start = 0;
 
-    // Cursor line (blinking effect simulated with block char)
-    if !body.is_empty() {
-        let cursor_line = " █";
-        let cursor_pad = inner_w.saturating_sub(cursor_line.len());
-        lines.push(Line::from(vec![
-            Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(cursor_line, Style::default().fg(styles::FG_HUNK).bg(bg_color)),
-            Span::styled(" ".repeat(cursor_pad), Style::default().bg(bg_color)),
-            Span::styled("│", Style::default().fg(border_color)),
-        ]));
+        while start < body_chars.len() {
+            let end = (start + max_content_width).min(body_chars.len());
+            let line_str: String = body_chars[start..end].iter().collect();
+            let is_last = end >= body_chars.len();
+
+            if is_last {
+                // Last line with cursor at end
+                let line_text = format!(" {}", line_str);
+                let content_len = line_text.chars().count() + 1; // +1 for cursor
+                let pad_len = inner_w.saturating_sub(content_len);
+
+                lines.push(Line::from(vec![
+                    Span::styled("  │", Style::default().fg(border_color)),
+                    Span::styled(line_text, text_style),
+                    Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+                    Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                    Span::styled("│", Style::default().fg(border_color)),
+                ]));
+            } else {
+                // Not the last line
+                let line_text = format!(" {}", line_str);
+                let pad_len = inner_w.saturating_sub(line_text.chars().count());
+
+                lines.push(Line::from(vec![
+                    Span::styled("  │", Style::default().fg(border_color)),
+                    Span::styled(line_text, text_style),
+                    Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                    Span::styled("│", Style::default().fg(border_color)),
+                ]));
+            }
+
+            start = end;
+        }
     }
 
     // Empty line
@@ -910,6 +951,7 @@ pub fn render_unified(
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    stale_viewed: &HashSet<usize>,
     diff_source: DiffSource,
     uncommitted_files: &HashSet<String>,
     comments: &[Comment],
@@ -936,15 +978,18 @@ pub fn render_unified(
         (None, area)
     };
 
-    // Render sticky header if present (with gutter space to match content)
+    // Render sticky header if present
     if let (Some(sticky_rect), Some((path, stats, file_idx))) = (sticky_area, sticky_header) {
         let is_viewed = viewed.contains(&file_idx);
-        let sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, content_width);
-        // Prepend gutter space to match content alignment
-        let gutter_span = Span::styled("  ", Style::default());
-        let mut full_line = vec![gutter_span];
-        full_line.extend(sticky_line.spans);
-        let sticky_para = Paragraph::new(vec![Line::from(full_line)]);
+        let is_stale = stale_viewed.contains(&file_idx);
+        // Use content_width (same as regular file headers) to ensure alignment
+        let mut sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, is_stale, content_width);
+
+        // Build full line: gutter (2 chars) + header content (same as regular lines)
+        let mut spans = vec![Span::styled("  ", Style::default())];
+        spans.extend(sticky_line.spans.drain(..));
+
+        let sticky_para = Paragraph::new(vec![Line::from(spans)]);
         frame.render_widget(sticky_para, sticky_rect);
     }
 
@@ -967,7 +1012,7 @@ pub fn render_unified(
             .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
             .unwrap_or(false);
 
-        let mut rendered = render_unified_line(line, current_file, collapsed, viewed, content_width);
+        let mut rendered = render_unified_line(line, current_file, collapsed, viewed, stale_viewed, content_width);
 
         // Apply visual selection highlighting
         if is_selected {
@@ -1010,12 +1055,13 @@ pub fn render_unified(
         // Render inline comments for this line if enabled
         if show_comments {
             let file_path = diff.files.get(line.file_index).map(|f| f.path.as_str());
-            if let Some(path) = file_path {
+            let source_line_num = line.content.new_line_num().map(|n| n as usize);
+            if let (Some(path), Some(line_num)) = (file_path, source_line_num) {
                 for comment in comments.iter().filter(|c| {
-                    c.file_path == path && absolute_line_idx >= c.start_line && absolute_line_idx <= c.end_line
+                    c.file_path == path && line_num >= c.start_line && line_num <= c.end_line
                 }) {
                     // Only render comment after the last line of its range
-                    if absolute_line_idx == comment.end_line {
+                    if line_num == comment.end_line {
                         let is_focused = focused_comment == Some(comment.id);
                         let comment_lines = render_comment_box(comment, content_width + gutter_width, is_focused);
                         for comment_line in comment_lines {
@@ -1054,7 +1100,7 @@ pub fn render_unified(
     }
 
     let content = Paragraph::new(visible_lines)
-        .style(Style::default().bg(styles::BG_DEFAULT));
+        .style(Style::default());
     frame.render_widget(content, content_area);
 
     if lines.len() > visible_height {
@@ -1074,6 +1120,7 @@ pub fn render_split(
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    stale_viewed: &HashSet<usize>,
     diff_source: DiffSource,
     uncommitted_files: &HashSet<String>,
     comments: &[Comment],
@@ -1102,7 +1149,8 @@ pub fn render_split(
     // Render sticky header if present
     if let (Some(area), Some((path, stats, file_idx))) = (sticky_area, sticky_header) {
         let is_viewed = viewed.contains(&file_idx);
-        let sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, area.width);
+        let is_stale = stale_viewed.contains(&file_idx);
+        let sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, is_stale, area.width);
         let sticky_para = Paragraph::new(vec![sticky_line]);
         frame.render_widget(sticky_para, area);
     }
@@ -1127,7 +1175,7 @@ pub fn render_split(
             .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
             .unwrap_or(false);
 
-        let mut rendered = render_split_line(line, current_file, collapsed, viewed, half_width as usize, content_area.width.saturating_sub(gutter_width));
+        let mut rendered = render_split_line(line, current_file, collapsed, viewed, stale_viewed, half_width as usize, content_area.width.saturating_sub(gutter_width));
 
         // Apply visual selection highlighting
         if is_selected {
@@ -1170,12 +1218,13 @@ pub fn render_split(
         // Render inline comments for this line if enabled
         if show_comments {
             let file_path = diff.files.get(line.file_index).map(|f| f.path.as_str());
-            if let Some(path) = file_path {
+            let source_line_num = line.content.new_line_num().map(|n| n as usize);
+            if let (Some(path), Some(line_num)) = (file_path, source_line_num) {
                 for comment in comments.iter().filter(|c| {
-                    c.file_path == path && absolute_line_idx >= c.start_line && absolute_line_idx <= c.end_line
+                    c.file_path == path && line_num >= c.start_line && line_num <= c.end_line
                 }) {
                     // Only render comment after the last line of its range
-                    if absolute_line_idx == comment.end_line {
+                    if line_num == comment.end_line {
                         let is_focused = focused_comment == Some(comment.id);
                         let comment_lines = render_comment_box(comment, content_area.width, is_focused);
                         for comment_line in comment_lines {
@@ -1214,7 +1263,7 @@ pub fn render_split(
     }
 
     let content = Paragraph::new(visible_lines)
-        .style(Style::default().bg(styles::BG_DEFAULT));
+        .style(Style::default());
     frame.render_widget(content, content_area);
 
     if lines.len() > visible_height {
@@ -1253,6 +1302,7 @@ fn render_sticky_header(
     current_file: usize,
     collapsed: &HashSet<usize>,
     is_viewed: bool,
+    is_stale: bool,
     width: u16,
 ) -> Line<'static> {
     let w = width as usize;
@@ -1261,6 +1311,7 @@ fn render_sticky_header(
 
     let toggle = if is_collapsed { "›" } else { "⌄" };
     let viewed_icon = if is_viewed { " ✓" } else { "" };
+    let stale_icon = if is_stale { " ●" } else { "" };
     let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
     let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
 
@@ -1270,10 +1321,11 @@ fn render_sticky_header(
     // Calculate exact widths for alignment
     // Left: space + toggle + space + path
     let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
-    // Right: +N + 2 spaces + -M + viewed + trailing space
-    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + 1;
+    // Right: +N + 2 spaces + -M + viewed + stale + trailing space
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_icon.chars().count() + 1;
 
-    let inner_width = w.saturating_sub(2); // subtract borders
+    // Content lines are w-1 wide, so header should also be w-1
+    let inner_width = w.saturating_sub(3);
     let padding_len = inner_width.saturating_sub(left_len + right_len);
 
     Line::from(vec![
@@ -1287,6 +1339,7 @@ fn render_sticky_header(
         Span::styled("  ", Style::default()),
         Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
         Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(stale_icon, Style::default().fg(styles::FG_WARNING)),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
@@ -1298,6 +1351,7 @@ fn render_unified_line(
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    stale_viewed: &HashSet<usize>,
     width: u16,
 ) -> Line<'static> {
     let w = width as usize;
@@ -1307,13 +1361,15 @@ fn render_unified_line(
     match &line.content {
         LineContent::FileHeaderTop { path, stats } => {
             let is_viewed = viewed.contains(&line.file_index);
-            render_file_header_top(path, stats, line.file_index, current_file, collapsed, is_viewed, width)
+            let is_stale = stale_viewed.contains(&line.file_index);
+            render_file_header_top(path, stats, line.file_index, current_file, collapsed, is_viewed, is_stale, width)
         }
         LineContent::FileHeaderBottom => {
             render_file_header_bottom(line.file_index, current_file, width)
         }
         LineContent::HunkHeader { text } => {
-            let inner_width = w.saturating_sub(2);
+            // Content lines are w-1, so hunk header should be too
+            let inner_width = w.saturating_sub(3);
             let expand_area = "  ⋯  ";
             let hunk_text = format!(" {} ", text);
             let used_width = expand_area.chars().count() + hunk_text.chars().count();
@@ -1421,6 +1477,7 @@ fn render_file_header_top(
     current_file: usize,
     collapsed: &HashSet<usize>,
     is_viewed: bool,
+    is_stale: bool,
     width: u16,
 ) -> Line<'static> {
     let w = width as usize;
@@ -1435,14 +1492,16 @@ fn render_file_header_top(
     let add_str = format!("+{}", stats.additions);
     let del_str = format!("-{}", stats.deletions);
     let viewed_icon = if is_viewed { " ✓" } else { "" };
+    let stale_icon = if is_stale { " ●" } else { "" };
 
     // Calculate exact widths for alignment
     // Left: space + toggle + space + path
     let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
-    // Right: +N + 2 spaces + -M + viewed + trailing space
-    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + 1;
+    // Right: +N + 2 spaces + -M + viewed + stale + trailing space
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_icon.chars().count() + 1;
 
-    let inner_width = w.saturating_sub(2); // subtract borders
+    // Content lines are w-1 wide, so header should also be w-1
+    let inner_width = w.saturating_sub(3);
     let padding_len = inner_width.saturating_sub(left_len + right_len);
 
     Line::from(vec![
@@ -1456,6 +1515,7 @@ fn render_file_header_top(
         Span::styled("  ", Style::default()),
         Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
         Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(stale_icon, Style::default().fg(styles::FG_WARNING)),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
@@ -1466,7 +1526,9 @@ fn render_file_header_bottom(file_index: usize, current_file: usize, width: u16)
     let is_current = file_index == current_file;
     let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
 
-    let inner_width = w.saturating_sub(2);
+    // Content lines are: │ + 4 + 1 + 4 + 2 + content + │ = 12 + content + 1 = 13 + (w-14) = w-1
+    // So bottom border should also be w-1: ╰ + (w-3) + ╯ = 1 + (w-3) + 1 = w-1
+    let inner_width = w.saturating_sub(3);
 
     Line::from(vec![
         Span::styled("╰", Style::default().fg(border_color)),
@@ -1481,6 +1543,7 @@ fn render_split_line(
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    stale_viewed: &HashSet<usize>,
     half_width: usize,
     full_width: u16,
 ) -> Line<'static> {
@@ -1491,13 +1554,15 @@ fn render_split_line(
     match &line.content {
         LineContent::FileHeaderTop { path, stats } => {
             let is_viewed = viewed.contains(&line.file_index);
-            render_file_header_top(path, stats, line.file_index, current_file, collapsed, is_viewed, full_width)
+            let is_stale = stale_viewed.contains(&line.file_index);
+            render_file_header_top(path, stats, line.file_index, current_file, collapsed, is_viewed, is_stale, full_width)
         }
         LineContent::FileHeaderBottom => {
             render_file_header_bottom(line.file_index, current_file, full_width)
         }
         LineContent::HunkHeader { text } => {
-            let inner_width = w.saturating_sub(2);
+            // Content lines are w-1, so hunk header should be too
+            let inner_width = w.saturating_sub(3);
             let expand_area = "  ⋯  ";
             let hunk_text = format!(" {} ", text);
             let used_width = expand_area.chars().count() + hunk_text.chars().count();

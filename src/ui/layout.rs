@@ -26,6 +26,7 @@ pub fn render_main(
     cursor: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    stale_viewed: &HashSet<usize>,
     filter: &str,
     filter_focused: bool,
     view_mode: diff_view::DiffViewMode,
@@ -58,10 +59,6 @@ pub fn render_main(
     render_global_header(frame, vertical_chunks[0], diff, branch, base, current_file_index, viewed, sidebar_collapsed, has_pending_changes, diff_source);
 
     if sidebar_collapsed {
-        // Fill background before adding content
-        let diff_bg = Block::default().style(Style::default().bg(styles::BG_DEFAULT));
-        frame.render_widget(diff_bg, vertical_chunks[1]);
-
         // Full-width diff view when sidebar is collapsed
         // Add horizontal padding
         let padded_area = Rect {
@@ -83,6 +80,7 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    stale_viewed,
                     diff_source,
                     uncommitted_files,
                     comments,
@@ -103,6 +101,7 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    stale_viewed,
                     diff_source,
                     uncommitted_files,
                     comments,
@@ -135,10 +134,6 @@ pub fn render_main(
             tree_state,
         );
 
-        // Fill diff panel background before adding content
-        let diff_bg = Block::default().style(Style::default().bg(styles::BG_DEFAULT));
-        frame.render_widget(diff_bg, horizontal_chunks[1]);
-
         // Add horizontal padding to diff area
         let diff_area = Rect {
             x: horizontal_chunks[1].x + 1,
@@ -160,6 +155,7 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    stale_viewed,
                     diff_source,
                     uncommitted_files,
                     comments,
@@ -180,6 +176,7 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    stale_viewed,
                     diff_source,
                     uncommitted_files,
                     comments,
@@ -329,8 +326,7 @@ fn render_status_bar(
     ));
 
     let status_line = Line::from(spans);
-    let para = Paragraph::new(vec![border_line, status_line])
-        .style(Style::default().bg(styles::BG_DEFAULT));
+    let para = Paragraph::new(vec![border_line, status_line]);
     frame.render_widget(para, area);
 }
 
@@ -478,8 +474,7 @@ fn render_global_header(
         Style::default().fg(styles::FG_BORDER),
     ));
 
-    let header = Paragraph::new(vec![header_line, border_line])
-        .style(Style::default().bg(styles::BG_DEFAULT));
+    let header = Paragraph::new(vec![header_line, border_line]);
     frame.render_widget(header, area);
 }
 

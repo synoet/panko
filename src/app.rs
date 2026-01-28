@@ -1,9 +1,9 @@
 //! Application state machine.
 
-use crate::domain::{BranchPreview, Comment, Diff};
+use crate::domain::{BranchPreview, Comment, Diff, Reply};
 use crate::ports::{
-    FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, StateStore, Terminal,
-    TerminalEvent,
+    FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, NewReply, StateStore,
+    Terminal, TerminalEvent,
 };
 use crate::ui::{diff_view, file_tree, layout};
 use anyhow::Result;
@@ -76,6 +76,8 @@ pub struct App {
     pub has_pending_changes: bool,
     // Map from file path to viewed_at timestamp (for "new changes" detection)
     viewed_timestamps: HashMap<String, i64>,
+    // Files that were viewed in a previous session (may have changes since)
+    pub stale_viewed_files: HashSet<usize>,
 
     // Diff source mode
     pub diff_source: DiffSource,
@@ -97,6 +99,8 @@ pub struct App {
     pub comment_author: String,
     /// Currently focused comment (when navigating into a comment)
     pub focused_comment: Option<i64>,
+    /// Comment ID we're replying to (None = creating new comment)
+    pub reply_to_comment_id: Option<i64>,
     /// Last known viewport height (updated during render)
     pub viewport_height: usize,
 }
@@ -147,6 +151,7 @@ impl App {
             scroll: 0,
             cursor: 0,
             collapsed_files,
+            stale_viewed_files: viewed_files.clone(), // Files from previous session are stale
             viewed_files,
             filter: String::new(),
             should_quit: false,
@@ -167,6 +172,7 @@ impl App {
             comment_file_path: None,
             comment_author: Self::get_git_author(git),
             focused_comment: None,
+            reply_to_comment_id: None,
             viewport_height: 30, // Default, updated during render
         })
     }
@@ -231,12 +237,22 @@ impl App {
     }
 
     pub fn run<T: Terminal>(&mut self, terminal: &mut T, git: &dyn GitRepo) -> Result<()> {
+        let mut tick_count: u32 = 0;
+        const COMMENT_REFRESH_INTERVAL: u32 = 40; // ~2 seconds at 50ms poll rate
+
         while !self.should_quit {
             // Check for file changes
             if let Some(ref watcher) = self.file_watcher {
                 if watcher.has_changes() {
                     self.has_pending_changes = true;
                 }
+            }
+
+            // Periodically refresh comments from database (for live updates from agents)
+            tick_count += 1;
+            if tick_count >= COMMENT_REFRESH_INTERVAL {
+                tick_count = 0;
+                self.refresh_comments();
             }
 
             self.draw(terminal)?;
@@ -246,6 +262,15 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Refresh comments from the database (for live updates from CLI/agents).
+    fn refresh_comments(&mut self) {
+        if let Some(ref store) = self.state_store {
+            if let Ok(comments) = store.get_comments(&self.repo_path, &self.branch) {
+                self.comments = comments;
+            }
+        }
     }
 
     /// Refresh git data (reload diff and commits).
@@ -363,6 +388,7 @@ impl App {
         let has_pending_changes = self.has_pending_changes;
         let diff_source = self.diff_source;
         let uncommitted_files = &self.uncommitted_files;
+        let stale_viewed = &self.stale_viewed_files;
         let comments = &self.comments;
         let show_comments = self.show_comments;
         let focused_comment = self.focused_comment;
@@ -396,6 +422,7 @@ impl App {
                     cursor,
                     collapsed,
                     viewed,
+                    stale_viewed,
                     filter,
                     filter_focused,
                     view_mode,
@@ -648,17 +675,25 @@ impl App {
     fn handle_comment_input_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Esc => {
-                // Cancel comment input, return to visual mode
-                self.mode = ViewMode::Visual;
+                // Cancel comment/reply input
+                self.mode = ViewMode::Normal;
                 self.comment_input.clear();
+                self.reply_to_comment_id = None;
+                self.exit_visual_mode();
             }
             KeyCode::Enter => {
-                // Submit comment if not empty
+                // Submit comment or reply if not empty
                 if !self.comment_input.trim().is_empty() {
-                    self.submit_comment();
+                    if self.reply_to_comment_id.is_some() {
+                        self.submit_reply();
+                    } else {
+                        self.submit_comment();
+                    }
                 }
+                self.mode = ViewMode::Normal;
                 self.exit_visual_mode();
                 self.comment_input.clear();
+                self.reply_to_comment_id = None;
             }
             KeyCode::Char(c) => {
                 self.comment_input.push(c);
@@ -672,12 +707,34 @@ impl App {
     }
 
     fn submit_comment(&mut self) {
-        let Some((start_line, end_line)) = self.visual_selection() else {
+        let Some((start_idx, end_idx)) = self.visual_selection() else {
             return;
         };
         let Some(file_path) = self.comment_file_path.clone() else {
             return;
         };
+
+        // Extract actual source line numbers from the diff lines
+        // Look for new_num (right side) as that's what we're commenting on
+        let start_line = self.diff_lines.get(start_idx)
+            .and_then(|l| l.content.new_line_num())
+            .or_else(|| {
+                // If start line has no line number, find first line in range that does
+                (start_idx..=end_idx)
+                    .find_map(|i| self.diff_lines.get(i).and_then(|l| l.content.new_line_num()))
+            })
+            .map(|n| n as usize)
+            .unwrap_or(start_idx);
+
+        let end_line = self.diff_lines.get(end_idx)
+            .and_then(|l| l.content.new_line_num())
+            .or_else(|| {
+                // If end line has no line number, find last line in range that does
+                (start_idx..=end_idx).rev()
+                    .find_map(|i| self.diff_lines.get(i).and_then(|l| l.content.new_line_num()))
+            })
+            .map(|n| n as usize)
+            .unwrap_or(end_idx);
 
         let new_comment = NewComment {
             file_path,
@@ -712,12 +769,67 @@ impl App {
         }
     }
 
+    /// Start replying to a comment.
+    fn start_reply(&mut self, comment_id: i64) {
+        self.reply_to_comment_id = Some(comment_id);
+        self.comment_input.clear();
+        self.mode = ViewMode::CommentInput;
+    }
+
+    /// Submit a reply to a comment.
+    fn submit_reply(&mut self) {
+        let Some(comment_id) = self.reply_to_comment_id else {
+            return;
+        };
+
+        let body = self.comment_input.trim().to_string();
+        if body.is_empty() {
+            return;
+        }
+
+        // Save to state store
+        if let Some(ref store) = self.state_store {
+            if let Ok(reply_id) = store.add_reply(NewReply {
+                comment_id,
+                body: body.clone(),
+                author: self.comment_author.clone(),
+            }) {
+                // Add to local comments list
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+
+                if let Some(comment) = self.comments.iter_mut().find(|c| c.id == comment_id) {
+                    comment.replies.push(Reply {
+                        id: reply_id,
+                        comment_id,
+                        body,
+                        author: self.comment_author.clone(),
+                        created_at: now,
+                    });
+                }
+            }
+        }
+
+        self.reply_to_comment_id = None;
+    }
+
     /// Toggle resolved status of a comment at the current cursor position.
     pub fn toggle_comment_resolved(&mut self) {
-        // Find a comment that covers the current cursor position
-        let cursor = self.cursor;
+        // Find a comment that covers the current cursor position (using source line numbers)
+        let source_line = self.diff_lines.get(self.cursor)
+            .and_then(|l| l.content.new_line_num())
+            .map(|n| n as usize);
+        let file_path = self.diff_lines.get(self.cursor)
+            .and_then(|l| self.diff.files.get(l.file_index))
+            .map(|f| f.path.as_str());
+
+        let Some(line_num) = source_line else { return };
+        let Some(path) = file_path else { return };
+
         if let Some(comment) = self.comments.iter_mut().find(|c| {
-            cursor >= c.start_line && cursor <= c.end_line
+            c.file_path == path && line_num >= c.start_line && line_num <= c.end_line
         }) {
             comment.resolved = !comment.resolved;
             if let Some(ref store) = self.state_store {
@@ -802,8 +914,10 @@ impl App {
                     let _ = store.unmark_viewed(&self.repo_path, &self.branch, file_path);
                 }
             } else {
-                // Mark as viewed
+                // Mark as viewed and collapse the file
                 self.viewed_files.insert(file_idx);
+                self.collapsed_files.insert(file_idx);
+                self.stale_viewed_files.remove(&file_idx); // No longer stale after viewing
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -813,6 +927,9 @@ impl App {
                 if let Some(ref store) = self.state_store {
                     let _ = store.mark_viewed(&self.repo_path, &self.branch, file_path);
                 }
+
+                // Rebuild diff lines since we collapsed a file
+                self.rebuild_diff_lines();
             }
         }
     }
@@ -895,6 +1012,18 @@ impl App {
                     self.toggle_comment_resolved();
                 }
             }
+            KeyCode::Char('D') => {
+                // Delete focused comment
+                if let Some(comment_id) = self.focused_comment {
+                    self.delete_comment(comment_id);
+                }
+            }
+            KeyCode::Char('r') => {
+                // Reply to focused comment
+                if let Some(comment_id) = self.focused_comment {
+                    self.start_reply(comment_id);
+                }
+            }
             KeyCode::Enter => {
                 // Toggle collapse on the current file when cursor is on its header
                 if let Some(line) = self.diff_lines.get(self.cursor) {
@@ -952,17 +1081,14 @@ impl App {
         self.sync_from_cursor();
     }
 
-    /// Find a comment that ends at the current cursor position.
+    /// Find a comment that ends at the current cursor position (using source line numbers).
     fn find_comment_at_cursor_end(&self) -> Option<&Comment> {
-        let cursor = self.cursor;
-        let file_path = self.diff_lines.get(cursor)
-            .and_then(|line| self.diff.files.get(line.file_index))
-            .map(|f| f.path.as_str());
+        let diff_line = self.diff_lines.get(self.cursor)?;
+        let source_line = diff_line.content.new_line_num()? as usize;
+        let file_path = self.diff.files.get(diff_line.file_index)?.path.as_str();
 
-        file_path.and_then(|path| {
-            self.comments.iter().find(|c| {
-                c.file_path == path && c.end_line == cursor
-            })
+        self.comments.iter().find(|c| {
+            c.file_path == file_path && c.end_line == source_line
         })
     }
 
@@ -993,41 +1119,31 @@ impl App {
         }
     }
 
+    /// Delete a comment by ID.
+    fn delete_comment(&mut self, comment_id: i64) {
+        // Remove from local state
+        self.comments.retain(|c| c.id != comment_id);
+        // Remove from persistent storage
+        if let Some(ref store) = self.state_store {
+            let _ = store.delete_comment(comment_id);
+        }
+        // Clear focus
+        self.focused_comment = None;
+    }
+
     /// Ensure the cursor is visible in the viewport with scroll margin.
     fn ensure_cursor_visible(&mut self) {
         // Use stored viewport height (updated during render)
-        let base_vh = self.viewport_height.max(5);
-
-        // Subtract lines taken by comments in the visible range
-        let comment_lines = if self.show_comments {
-            self.estimate_comment_lines(self.scroll, self.scroll + base_vh)
-        } else {
-            0
-        };
-        let vh = base_vh.saturating_sub(comment_lines).max(5);
+        // Don't adjust for comments - that causes jumpy scrolling as comment count changes
+        let vh = self.viewport_height.max(5);
 
         if self.cursor < self.scroll {
-            // Cursor above viewport - scroll up
+            // Cursor above viewport - scroll up to keep cursor visible
             self.scroll = self.cursor;
-        } else if self.cursor + 2 >= self.scroll + vh {
-            // Cursor at or near bottom (1 line margin) - scroll down
-            self.scroll = (self.cursor + 2).saturating_sub(vh);
+        } else if self.cursor >= self.scroll + vh {
+            // Cursor below viewport - scroll down just enough to show cursor at bottom
+            self.scroll = self.cursor + 1 - vh;
         }
-    }
-
-    /// Estimate how many screen lines comments take in a given diff line range.
-    fn estimate_comment_lines(&self, start: usize, end: usize) -> usize {
-        let mut total = 0;
-        for comment in &self.comments {
-            // Comment renders after its end_line
-            if comment.end_line >= start && comment.end_line < end {
-                // Estimate: header(1) + author(1) + body(~2-3) + bottom(1) + replies
-                let body_lines = (comment.body.len() / 60).max(1); // rough wrap estimate
-                let reply_lines = comment.replies.len() * 2; // ~2 lines per reply
-                total += 4 + body_lines + reply_lines;
-            }
-        }
-        total
     }
 
     fn sync_tree_selection(&mut self) {

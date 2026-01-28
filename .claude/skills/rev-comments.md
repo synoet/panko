@@ -44,6 +44,24 @@ rev unresolve <comment_id>
 ### Reply to a comment
 ```bash
 rev reply <comment_id> --message "Your reply here"
+rev reply <comment_id> --message "Your reply" --author "Claude"  # specify author
+```
+
+### Add a new comment
+```bash
+rev comment <file_path> <start_line> <end_line> --message "Your comment"
+rev comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
+```
+
+### Delete a comment
+```bash
+rev delete <comment_id>
+```
+
+### Show a specific comment thread
+```bash
+rev show <comment_id>
+rev show <comment_id> --format json
 ```
 
 ## Workflow
@@ -131,6 +149,8 @@ Done! Both comments have been addressed and resolved.
 
 ## Notes
 
-- Comments are stored locally in SQLite at `~/.config/rev/state.db`
+- Comments are stored locally in SQLite at `~/.config/rev/state.db` (macOS: `~/Library/Application Support/rev/`)
 - Comments are scoped to repo + branch, so switching branches shows different comments
-- Line numbers in comments refer to the diff view, not the actual file (this matches GitHub's behavior)
+- Line numbers refer to actual source file lines (in the new/right side of the diff)
+- The `--author` flag lets agents identify themselves (defaults to git user name)
+- Comments live-update in the TUI every ~2 seconds, so CLI changes appear automatically

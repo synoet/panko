@@ -321,10 +321,6 @@ pub fn render(
     filter_focused: bool,
     list_state: &mut ListState,
 ) {
-    // Background
-    let bg = Paragraph::new("").style(Style::default().bg(styles::BG_SIDEBAR));
-    frame.render_widget(bg, area);
-
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -344,15 +340,14 @@ pub fn render(
     };
 
     let filter_style = if filter_focused {
-        Style::default().fg(styles::FG_DEFAULT).bg(styles::BG_SIDEBAR)
+        Style::default().fg(styles::FG_DEFAULT)
     } else {
-        Style::default().fg(styles::FG_MUTED).bg(styles::BG_SIDEBAR)
+        Style::default().fg(styles::FG_MUTED)
     };
 
     let filter_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(filter_border_color))
-        .style(Style::default().bg(styles::BG_SIDEBAR))
         .title(Span::styled(" Files ", Style::default().fg(styles::FG_DEFAULT)));
 
     let filter_input = Paragraph::new(filter_text)
@@ -413,15 +408,15 @@ pub fn render(
                 }
             }
 
-            let bg = if is_selected {
-                styles::BG_SELECTED
+            let style = if is_selected {
+                Style::default().bg(styles::BG_SELECTED)
             } else if is_current && !item.is_directory {
-                styles::BG_HOVER
+                Style::default().bg(styles::BG_HOVER)
             } else {
-                styles::BG_SIDEBAR
+                Style::default()
             };
 
-            ListItem::new(Line::from(spans)).style(Style::default().bg(bg))
+            ListItem::new(Line::from(spans)).style(style)
         })
         .collect();
 
@@ -430,7 +425,6 @@ pub fn render(
     let tree_block = Block::default()
         .borders(Borders::RIGHT)
         .border_style(Style::default().fg(styles::FG_BORDER))
-        .style(Style::default().bg(styles::BG_SIDEBAR))
         .padding(Padding::new(1, 0, 0, 0));
 
     let list = List::new(items)
