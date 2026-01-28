@@ -341,6 +341,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
+name = "diffium"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "git2",
+ "notify",
+ "once_cell",
+ "pretty_assertions",
+ "ratatui",
+ "rusqlite",
+ "syntect",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1196,25 +1215,6 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
-
-[[package]]
-name = "rev"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "git2",
- "notify",
- "once_cell",
- "pretty_assertions",
- "ratatui",
- "rusqlite",
- "syntect",
- "unicode-width 0.2.0",
-]
 
 [[package]]
 name = "rusqlite"

@@ -81,7 +81,7 @@ impl SqliteStateStore {
     fn db_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?;
-        Ok(config_dir.join("rev").join("state.db"))
+        Ok(config_dir.join("diffium").join("state.db"))
     }
 
     /// Get current timestamp in milliseconds.
