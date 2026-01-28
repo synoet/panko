@@ -34,4 +34,11 @@ pub trait GitRepo {
 
     /// Get working directory path for file watching.
     fn workdir(&self) -> Result<std::path::PathBuf>;
+
+    /// Get uncommitted changes (HEAD to working tree).
+    /// This includes both staged and unstaged changes.
+    fn uncommitted_diff(&self) -> Result<Diff>;
+
+    /// Get the diff from merge-base to working tree (committed + uncommitted).
+    fn diff_to_workdir(&self, merge_base_hash: &str) -> Result<Diff>;
 }

@@ -1,5 +1,6 @@
 //! Main layout orchestrating file tree and diff view.
 
+use crate::app::DiffSource;
 use crate::domain::Diff;
 use crate::ui::{diff_view, file_tree, styles};
 use ratatui::{
@@ -32,6 +33,8 @@ pub fn render_main(
     tree_state: &mut ListState,
     sidebar_collapsed: bool,
     has_pending_changes: bool,
+    diff_source: DiffSource,
+    uncommitted_files: &HashSet<String>,
 ) {
     // Split into header and main content area (with padding below header)
     let vertical_chunks = Layout::default()
@@ -40,7 +43,7 @@ pub fn render_main(
         .split(area);
 
     // Render full-width header
-    render_global_header(frame, vertical_chunks[0], diff, branch, base, current_file_index, viewed, sidebar_collapsed, has_pending_changes);
+    render_global_header(frame, vertical_chunks[0], diff, branch, base, current_file_index, viewed, sidebar_collapsed, has_pending_changes, diff_source);
 
     if sidebar_collapsed {
         // Full-width diff view when sidebar is collapsed
@@ -63,6 +66,8 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    diff_source,
+                    uncommitted_files,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -75,6 +80,8 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    diff_source,
+                    uncommitted_files,
                 );
             }
         }
@@ -120,6 +127,8 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    diff_source,
+                    uncommitted_files,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -132,6 +141,8 @@ pub fn render_main(
                     current_file_index,
                     collapsed,
                     viewed,
+                    diff_source,
+                    uncommitted_files,
                 );
             }
         }
@@ -149,13 +160,21 @@ fn render_global_header(
     viewed: &HashSet<usize>,
     sidebar_collapsed: bool,
     has_pending_changes: bool,
+    diff_source: DiffSource,
 ) {
     let stats = diff.total_stats();
     let file_count = diff.file_count();
     let viewed_count = viewed.len();
     let file_indicator = format!("File {}/{}", current_file + 1, file_count);
     let viewed_indicator = format!("{}/{} viewed", viewed_count, file_count);
-    let sidebar_hint = if sidebar_collapsed { "b show" } else { "b hide" };
+    let sidebar_hint = if sidebar_collapsed { "show" } else { "hide" };
+
+    // Diff source mode indicator
+    let (source_label, source_color) = match diff_source {
+        DiffSource::Committed => ("committed", styles::FG_MUTED),
+        DiffSource::Uncommitted => ("uncommitted", styles::FG_WARNING),
+        DiffSource::All => ("all", styles::FG_HUNK),
+    };
 
     let mut spans = vec![
         Span::styled("  ", Style::default()),
@@ -170,6 +189,11 @@ fn render_global_header(
         Span::styled(file_indicator, Style::default().fg(styles::FG_MUTED)),
         Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
         Span::styled(viewed_indicator, Style::default().fg(styles::FG_ADDITION)),
+        // Diff source indicator
+        Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled("u", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(source_label, Style::default().fg(source_color)),
     ];
 
     // Show refresh indicator if there are pending changes
@@ -185,7 +209,7 @@ fn render_global_header(
         Span::styled("v", Style::default().fg(styles::FG_HUNK)),
         Span::styled(" viewed  ", Style::default().fg(styles::FG_MUTED)),
         Span::styled("b", Style::default().fg(styles::FG_HUNK)),
-        Span::styled(format!(" {}  ", sidebar_hint.split_whitespace().last().unwrap_or("sidebar")), Style::default().fg(styles::FG_MUTED)),
+        Span::styled(format!(" {}  ", sidebar_hint), Style::default().fg(styles::FG_MUTED)),
         Span::styled("n/p", Style::default().fg(styles::FG_HUNK)),
         Span::styled(" nav  ", Style::default().fg(styles::FG_MUTED)),
         Span::styled("s", Style::default().fg(styles::FG_HUNK)),
@@ -264,6 +288,10 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  r         ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Refresh (reload git changes)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  u         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Cycle diff source (committed/uncommitted/all)"),
         ]),
         Line::from(""),
         Line::from(Span::styled("  General", styles::style_muted())),

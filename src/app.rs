@@ -28,6 +28,18 @@ pub enum Focus {
     FilterInput,
 }
 
+/// Source of the diff being displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffSource {
+    /// Show only committed changes (merge-base to HEAD) - GitHub PR style
+    #[default]
+    Committed,
+    /// Show only uncommitted changes (HEAD to working tree)
+    Uncommitted,
+    /// Show all changes (merge-base to working tree) with uncommitted marked
+    All,
+}
+
 /// Application state.
 pub struct App {
     pub preview: BranchPreview,
@@ -56,6 +68,11 @@ pub struct App {
     pub has_pending_changes: bool,
     // Map from file path to viewed_at timestamp (for "new changes" detection)
     viewed_timestamps: HashMap<String, i64>,
+
+    // Diff source mode
+    pub diff_source: DiffSource,
+    // Set of file paths with uncommitted changes (for orange gutter in All mode)
+    pub uncommitted_files: HashSet<String>,
 }
 
 impl App {
@@ -114,6 +131,8 @@ impl App {
             file_watcher,
             has_pending_changes: false,
             viewed_timestamps,
+            diff_source: DiffSource::Committed,
+            uncommitted_files: HashSet::new(),
         })
     }
 
@@ -169,9 +188,39 @@ impl App {
 
     /// Refresh git data (reload diff and commits).
     fn refresh(&mut self, git: &dyn GitRepo) -> Result<()> {
+        self.reload_diff(git)?;
+
+        // Clear pending changes flag and watcher
+        self.has_pending_changes = false;
+        if let Some(ref watcher) = self.file_watcher {
+            watcher.clear_changes();
+        }
+
+        Ok(())
+    }
+
+    /// Reload diff based on current diff_source mode.
+    fn reload_diff(&mut self, git: &dyn GitRepo) -> Result<()> {
         let merge_base = git.merge_base(&self.preview.base_branch)?;
         let commits = git.commits_since(&merge_base)?;
-        let diff = git.diff_to_base(&merge_base)?;
+
+        // Get the appropriate diff based on mode
+        let diff = match self.diff_source {
+            DiffSource::Committed => git.diff_to_base(&merge_base)?,
+            DiffSource::Uncommitted => git.uncommitted_diff()?,
+            DiffSource::All => git.diff_to_workdir(&merge_base)?,
+        };
+
+        // For All mode, track which files have uncommitted changes
+        self.uncommitted_files = if self.diff_source == DiffSource::All {
+            git.uncommitted_diff()?
+                .files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
 
         // Rebuild UI data structures
         self.tree_nodes = file_tree::build_tree(&diff);
@@ -187,12 +236,6 @@ impl App {
         self.diff = diff;
         self.viewed_files = viewed_files;
         self.viewed_timestamps = viewed_timestamps;
-
-        // Clear pending changes flag and watcher
-        self.has_pending_changes = false;
-        if let Some(ref watcher) = self.file_watcher {
-            watcher.clear_changes();
-        }
 
         // Clamp indices
         if self.current_file_index >= self.diff.files.len() {
@@ -242,6 +285,8 @@ impl App {
         let tree_state = &mut self.tree_state;
         let sidebar_collapsed = self.sidebar_collapsed;
         let has_pending_changes = self.has_pending_changes;
+        let diff_source = self.diff_source;
+        let uncommitted_files = &self.uncommitted_files;
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -268,6 +313,8 @@ impl App {
                     tree_state,
                     sidebar_collapsed,
                     has_pending_changes,
+                    diff_source,
+                    uncommitted_files,
                 );
             }
 
@@ -336,6 +383,17 @@ impl App {
         // 'r' to refresh
         if code == KeyCode::Char('r') {
             self.refresh(git)?;
+            return Ok(());
+        }
+
+        // 'u' to cycle diff source (Committed -> Uncommitted -> All -> Committed)
+        if code == KeyCode::Char('u') {
+            self.diff_source = match self.diff_source {
+                DiffSource::Committed => DiffSource::Uncommitted,
+                DiffSource::Uncommitted => DiffSource::All,
+                DiffSource::All => DiffSource::Committed,
+            };
+            self.reload_diff(git)?;
             return Ok(());
         }
 
@@ -653,6 +711,14 @@ mod tests {
 
         fn workdir(&self) -> Result<std::path::PathBuf> {
             Ok(std::path::PathBuf::from("/fake/repo"))
+        }
+
+        fn uncommitted_diff(&self) -> Result<Diff> {
+            Ok(Diff { files: vec![] })
+        }
+
+        fn diff_to_workdir(&self, _merge_base: &str) -> Result<Diff> {
+            Ok(self.diff.clone())
         }
     }
 

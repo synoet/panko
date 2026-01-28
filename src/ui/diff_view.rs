@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+use crate::app::DiffSource;
 use crate::domain::{Diff, DiffLine, DiffStats};
 use crate::ui::{styles, syntax};
 use ratatui::{
@@ -605,14 +606,18 @@ pub fn find_file_start(lines: &[DiffViewLine], file_index: usize) -> usize {
 pub fn render_unified(
     frame: &mut Frame,
     area: Rect,
-    _diff: &Diff,
+    diff: &Diff,
     lines: &[DiffViewLine],
     scroll: usize,
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    diff_source: DiffSource,
+    uncommitted_files: &HashSet<String>,
 ) {
-    let content_width = area.width;
+    // Gutter width: always 2 chars for consistent layout
+    let gutter_width = 2u16;
+    let content_width = area.width.saturating_sub(gutter_width);
 
     // Find the sticky header for current scroll position
     let sticky_header = find_sticky_header(lines, scroll, current_file);
@@ -642,7 +647,32 @@ pub fn render_unified(
         .iter()
         .skip(scroll)
         .take(visible_height)
-        .map(|line| render_unified_line(line, current_file, collapsed, viewed, content_width))
+        .map(|line| {
+            let mut rendered = render_unified_line(line, current_file, collapsed, viewed, content_width);
+
+            // Determine if this line's file has uncommitted changes
+            let file_path = diff.files.get(line.file_index).map(|f| &f.path);
+            let is_uncommitted = file_path
+                .map(|p| uncommitted_files.contains(p))
+                .unwrap_or(false);
+
+            // Prepend gutter (always present for consistent layout)
+            let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+                Style::default().fg(styles::FG_WARNING)
+            } else {
+                Style::default().fg(styles::FG_BORDER)
+            };
+
+            let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+                "▎ " // Orange bar for uncommitted
+            } else {
+                "  " // Empty gutter
+            };
+
+            let mut spans = vec![Span::styled(gutter_char, gutter_style)];
+            spans.extend(rendered.spans.drain(..));
+            Line::from(spans)
+        })
         .collect();
 
     let content = Paragraph::new(visible_lines);
@@ -657,13 +687,18 @@ pub fn render_unified(
 pub fn render_split(
     frame: &mut Frame,
     area: Rect,
-    _diff: &Diff,
+    diff: &Diff,
     lines: &[DiffViewLine],
     scroll: usize,
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
+    diff_source: DiffSource,
+    uncommitted_files: &HashSet<String>,
 ) {
+    // Gutter width: always 2 chars for consistent layout
+    let gutter_width = 2u16;
+
     // Find the sticky header for current scroll position
     let sticky_header = find_sticky_header(lines, scroll, current_file);
 
@@ -686,14 +721,39 @@ pub fn render_split(
         frame.render_widget(sticky_para, area);
     }
 
-    let half_width = content_area.width / 2;
+    let half_width = content_area.width.saturating_sub(gutter_width) / 2;
     let visible_height = content_area.height as usize;
 
     let visible_lines: Vec<Line> = lines
         .iter()
         .skip(scroll)
         .take(visible_height)
-        .map(|line| render_split_line(line, current_file, collapsed, viewed, half_width as usize, content_area.width))
+        .map(|line| {
+            let mut rendered = render_split_line(line, current_file, collapsed, viewed, half_width as usize, content_area.width.saturating_sub(gutter_width));
+
+            // Determine if this line's file has uncommitted changes
+            let file_path = diff.files.get(line.file_index).map(|f| &f.path);
+            let is_uncommitted = file_path
+                .map(|p| uncommitted_files.contains(p))
+                .unwrap_or(false);
+
+            // Prepend gutter (always present for consistent layout)
+            let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+                Style::default().fg(styles::FG_WARNING)
+            } else {
+                Style::default().fg(styles::FG_BORDER)
+            };
+
+            let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+                "▎ " // Orange bar for uncommitted
+            } else {
+                "  " // Empty gutter
+            };
+
+            let mut spans = vec![Span::styled(gutter_char, gutter_style)];
+            spans.extend(rendered.spans.drain(..));
+            Line::from(spans)
+        })
         .collect();
 
     let content = Paragraph::new(visible_lines);

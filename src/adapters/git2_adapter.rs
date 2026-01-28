@@ -182,6 +182,39 @@ impl GitRepo for Git2Repo {
             .map(PathBuf::from)
             .ok_or_else(|| anyhow!("Repository has no working directory (bare repo?)"))
     }
+
+    fn uncommitted_diff(&self) -> Result<Diff> {
+        let head = self.repo.head()?.peel_to_commit()?;
+        let head_tree = head.tree()?;
+
+        let mut opts = DiffOptions::new();
+        opts.context_lines(3);
+        opts.include_untracked(true);
+
+        // Diff from HEAD tree to working directory (includes staged + unstaged)
+        let diff = self
+            .repo
+            .diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut opts))?;
+
+        parse_git2_diff(&diff)
+    }
+
+    fn diff_to_workdir(&self, merge_base_hash: &str) -> Result<Diff> {
+        let merge_base_oid = git2::Oid::from_str(merge_base_hash)?;
+        let merge_base_commit = self.repo.find_commit(merge_base_oid)?;
+        let merge_base_tree = merge_base_commit.tree()?;
+
+        let mut opts = DiffOptions::new();
+        opts.context_lines(3);
+        opts.include_untracked(true);
+
+        // Diff from merge-base tree to working directory
+        let diff = self
+            .repo
+            .diff_tree_to_workdir_with_index(Some(&merge_base_tree), Some(&mut opts))?;
+
+        parse_git2_diff(&diff)
+    }
 }
 
 fn parse_git2_diff(diff: &git2::Diff) -> Result<Diff> {

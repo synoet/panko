@@ -1,6 +1,5 @@
 //! Color scheme matching GitHub's dark mode diff view.
 //! Uses RGB colors for rich visual experience.
-//! Test change to trigger file watcher.
 
 #![allow(dead_code)]
 
