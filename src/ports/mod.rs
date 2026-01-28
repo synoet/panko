@@ -5,5 +5,5 @@ pub mod terminal;
 
 pub use file_watcher::{FileEvent, FileWatcher};
 pub use git::GitRepo;
-pub use state_store::{StateStore, ViewedFile};
+pub use state_store::{NewComment, NewReply, StateStore, ViewedFile};
 pub use terminal::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Terminal, TerminalEvent};

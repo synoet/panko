@@ -4,11 +4,11 @@
 #![allow(dead_code)]
 
 use crate::app::DiffSource;
-use crate::domain::{Diff, DiffLine, DiffStats};
+use crate::domain::{Comment, Diff, DiffLine, DiffStats};
 use crate::ui::{styles, syntax};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
@@ -602,18 +602,317 @@ pub fn find_file_start(lines: &[DiffViewLine], file_index: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Apply visual selection highlight to a line.
+fn apply_visual_selection_highlight(mut line: Line<'static>) -> Line<'static> {
+    // Add a subtle background tint to indicate selection
+    for span in line.spans.iter_mut() {
+        // Add subtle selection background
+        if span.style.bg.is_none() {
+            span.style = span.style.bg(styles::BG_SELECTED);
+        }
+    }
+    line
+}
+
+/// Render a GitHub-style inline comment box.
+/// Returns multiple lines for the comment display.
+fn render_comment_box(comment: &Comment, width: u16, focused: bool) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let inner_w = w.saturating_sub(6); // Account for borders and padding
+
+    // Use accent color when focused
+    let border_color = if focused {
+        styles::FG_HUNK // Accent color when selected
+    } else if comment.resolved {
+        styles::FG_MUTED
+    } else {
+        styles::FG_BORDER
+    };
+    let bg_color = styles::BG_SIDEBAR;
+
+    let mut lines = Vec::new();
+
+    // ── Header line: "┌─ Comment on lines L69 to L75 ─────────────────┐"
+    let line_range = comment.line_range_display();
+    let header_text = format!(" Comment on lines {} ", line_range);
+    let header_fill_len = inner_w.saturating_sub(header_text.len() + 2);
+    let header_fill = "─".repeat(header_fill_len);
+
+    lines.push(Line::from(vec![
+        Span::styled("  ┌─", Style::default().fg(border_color)),
+        Span::styled(header_text, Style::default().fg(styles::FG_HUNK)),
+        Span::styled(header_fill, Style::default().fg(border_color)),
+        Span::styled("┐", Style::default().fg(border_color)),
+    ]));
+
+    // ── Author line: "│ synoet • 2h ago"
+    let resolved_badge = if comment.resolved { " ✓ Resolved" } else { "" };
+    let author_line = format!(" {} • {}{}", comment.author, comment.relative_time(), resolved_badge);
+    let author_pad = inner_w.saturating_sub(author_line.chars().count());
+
+    let author_style = if comment.resolved {
+        Style::default().fg(styles::FG_MUTED).bg(bg_color)
+    } else {
+        Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(author_line, author_style),
+        Span::styled(" ".repeat(author_pad), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // ── Empty line
+    let empty_fill = " ".repeat(inner_w);
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // ── Comment body (may wrap to multiple lines)
+    let body_style = if comment.resolved {
+        Style::default().fg(styles::FG_MUTED).bg(bg_color).add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
+    };
+
+    // Simple word wrap for comment body
+    for body_line in wrap_text(&comment.body, inner_w.saturating_sub(2)) {
+        let line_text = format!(" {}", body_line);
+        let pad_len = inner_w.saturating_sub(line_text.chars().count());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(line_text, body_style),
+            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+    }
+
+    // ── Replies
+    for reply in &comment.replies {
+        // Empty separator
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+
+        // Reply header
+        let reply_header = format!(" ↳ {} • {}", reply.author, reply.relative_time());
+        let reply_pad = inner_w.saturating_sub(reply_header.chars().count());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(reply_header, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(" ".repeat(reply_pad), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+
+        // Reply body
+        for reply_line in wrap_text(&reply.body, inner_w.saturating_sub(4)) {
+            let line_text = format!("   {}", reply_line);
+            let pad_len = inner_w.saturating_sub(line_text.chars().count());
+            lines.push(Line::from(vec![
+                Span::styled("  │", Style::default().fg(border_color)),
+                Span::styled(line_text, Style::default().fg(styles::FG_DEFAULT).bg(bg_color)),
+                Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                Span::styled("│", Style::default().fg(border_color)),
+            ]));
+        }
+    }
+
+    // ── Footer with hints
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    let hints = if comment.resolved {
+        " R unresolve"
+    } else {
+        " R resolve"
+    };
+    let hints_pad = inner_w.saturating_sub(hints.len());
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+        Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // ── Bottom border
+    let bottom_fill = "─".repeat(inner_w);
+    lines.push(Line::from(vec![
+        Span::styled("  └", Style::default().fg(border_color)),
+        Span::styled(bottom_fill, Style::default().fg(border_color)),
+        Span::styled("┘", Style::default().fg(border_color)),
+    ]));
+
+    lines
+}
+
+/// Render a draft comment box (for comment input mode).
+fn render_draft_comment_box(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+    body: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let inner_w = w.saturating_sub(6);
+
+    let border_color = styles::FG_HUNK; // Accent color for active draft
+    let bg_color = styles::BG_SIDEBAR;
+
+    let mut lines = Vec::new();
+
+    // Header
+    let line_range = if start_line == end_line {
+        format!("L{}", start_line + 1)
+    } else {
+        format!("L{}-L{}", start_line + 1, end_line + 1)
+    };
+    let header_text = format!(" New comment on {} ", line_range);
+    let header_fill_len = inner_w.saturating_sub(header_text.len() + 2);
+    let header_fill = "─".repeat(header_fill_len);
+
+    lines.push(Line::from(vec![
+        Span::styled("  ┌─", Style::default().fg(border_color)),
+        Span::styled(header_text, Style::default().fg(styles::FG_HUNK)),
+        Span::styled(header_fill, Style::default().fg(border_color)),
+        Span::styled("┐", Style::default().fg(border_color)),
+    ]));
+
+    // File path (truncated)
+    let _file_display: String = file_path.chars().rev().take(inner_w.saturating_sub(2)).collect::<String>().chars().rev().collect();
+
+    // Empty line
+    let empty_fill = " ".repeat(inner_w);
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // Body input area with cursor
+    let body_display = if body.is_empty() {
+        "Type your comment...".to_string()
+    } else {
+        body.to_string()
+    };
+
+    for body_line in wrap_text(&body_display, inner_w.saturating_sub(2)) {
+        let line_text = format!(" {}", body_line);
+        let pad_len = inner_w.saturating_sub(line_text.chars().count());
+
+        let text_style = if body.is_empty() {
+            Style::default().fg(styles::FG_MUTED).bg(bg_color)
+        } else {
+            Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(line_text, text_style),
+            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+    }
+
+    // Cursor line (blinking effect simulated with block char)
+    if !body.is_empty() {
+        let cursor_line = " █";
+        let cursor_pad = inner_w.saturating_sub(cursor_line.len());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(cursor_line, Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+            Span::styled(" ".repeat(cursor_pad), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+    }
+
+    // Empty line
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // Hints
+    let hints = " Enter submit │ Esc cancel";
+    let hints_pad = inner_w.saturating_sub(hints.len());
+    lines.push(Line::from(vec![
+        Span::styled("  │", Style::default().fg(border_color)),
+        Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+        Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
+        Span::styled("│", Style::default().fg(border_color)),
+    ]));
+
+    // Bottom border
+    let bottom_fill = "─".repeat(inner_w);
+    lines.push(Line::from(vec![
+        Span::styled("  └", Style::default().fg(border_color)),
+        Span::styled(bottom_fill, Style::default().fg(border_color)),
+        Span::styled("┘", Style::default().fg(border_color)),
+    ]));
+
+    lines
+}
+
+/// Simple word wrapping for text.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.len() + 1 + word.len() <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 /// Render unified diff view.
+#[allow(clippy::too_many_arguments)]
 pub fn render_unified(
     frame: &mut Frame,
     area: Rect,
     diff: &Diff,
     lines: &[DiffViewLine],
     scroll: usize,
+    cursor: usize,
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
     diff_source: DiffSource,
     uncommitted_files: &HashSet<String>,
+    comments: &[Comment],
+    show_comments: bool,
+    visual_selection: Option<(usize, usize)>,
+    focused_comment: Option<i64>,
+    draft_comment: Option<&(String, usize, usize, String)>,
 ) {
     // Gutter width: always 2 chars for consistent layout
     let gutter_width = 2u16;
@@ -643,37 +942,100 @@ pub fn render_unified(
 
     let visible_height = content_area.height as usize;
 
-    let visible_lines: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(visible_height)
-        .map(|line| {
-            let mut rendered = render_unified_line(line, current_file, collapsed, viewed, content_width);
+    // Build visible lines with visual selection highlighting and inline comments
+    let mut visible_lines: Vec<Line> = Vec::with_capacity(visible_height);
+    let mut line_idx = scroll;
+    let mut rendered_count = 0;
 
-            // Determine if this line's file has uncommitted changes
-            let file_path = diff.files.get(line.file_index).map(|f| &f.path);
-            let is_uncommitted = file_path
-                .map(|p| uncommitted_files.contains(p))
-                .unwrap_or(false);
+    while rendered_count < visible_height && line_idx < lines.len() {
+        let line = &lines[line_idx];
+        let absolute_line_idx = line_idx;
 
-            // Prepend gutter (always present for consistent layout)
-            let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
-                Style::default().fg(styles::FG_WARNING)
-            } else {
-                Style::default().fg(styles::FG_BORDER)
-            };
+        // Check if this line is part of visual selection
+        let is_selected = visual_selection
+            .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
+            .unwrap_or(false);
 
-            let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
-                "▎ " // Orange bar for uncommitted
-            } else {
-                "  " // Empty gutter
-            };
+        let mut rendered = render_unified_line(line, current_file, collapsed, viewed, content_width);
 
-            let mut spans = vec![Span::styled(gutter_char, gutter_style)];
-            spans.extend(rendered.spans.drain(..));
-            Line::from(spans)
-        })
-        .collect();
+        // Apply visual selection highlighting
+        if is_selected {
+            rendered = apply_visual_selection_highlight(rendered);
+        }
+
+        // Determine if this line's file has uncommitted changes
+        let file_path = diff.files.get(line.file_index).map(|f| &f.path);
+        let is_uncommitted = file_path
+            .map(|p| uncommitted_files.contains(p))
+            .unwrap_or(false);
+
+        // Prepend gutter (always present for consistent layout)
+        let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+            Style::default().fg(styles::FG_WARNING)
+        } else if is_selected {
+            Style::default().fg(styles::FG_HUNK)
+        } else {
+            Style::default().fg(styles::FG_BORDER)
+        };
+
+        let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+            "▎ " // Orange bar for uncommitted
+        } else if is_selected {
+            "▌ " // Visual selection indicator
+        } else {
+            "  " // Empty gutter
+        };
+
+        let mut spans = vec![Span::styled(gutter_char, gutter_style)];
+        spans.extend(rendered.spans.drain(..));
+        visible_lines.push(Line::from(spans));
+        rendered_count += 1;
+
+        // Render inline comments for this line if enabled
+        if show_comments {
+            let file_path = diff.files.get(line.file_index).map(|f| f.path.as_str());
+            if let Some(path) = file_path {
+                for comment in comments.iter().filter(|c| {
+                    c.file_path == path && absolute_line_idx >= c.start_line && absolute_line_idx <= c.end_line
+                }) {
+                    // Only render comment after the last line of its range
+                    if absolute_line_idx == comment.end_line {
+                        let is_focused = focused_comment == Some(comment.id);
+                        let comment_lines = render_comment_box(comment, content_width + gutter_width, is_focused);
+                        for comment_line in comment_lines {
+                            if rendered_count >= visible_height {
+                                break;
+                            }
+                            visible_lines.push(comment_line);
+                            rendered_count += 1;
+                        }
+                    }
+                }
+
+                // Render draft comment if this is the end line of the draft
+                if let Some((draft_path, draft_start, draft_end, draft_body)) = draft_comment {
+                    if draft_path == path && absolute_line_idx == *draft_end {
+                        let draft_lines = render_draft_comment_box(
+                            draft_path,
+                            *draft_start,
+                            *draft_end,
+                            draft_body,
+                            content_width + gutter_width,
+                        );
+                        for draft_line in draft_lines {
+                            if rendered_count >= visible_height {
+                                break;
+                            }
+                            visible_lines.push(draft_line);
+                            rendered_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        line_idx += 1;
+    }
 
     let content = Paragraph::new(visible_lines);
     frame.render_widget(content, content_area);
@@ -684,17 +1046,24 @@ pub fn render_unified(
 }
 
 /// Render split diff view.
+#[allow(clippy::too_many_arguments)]
 pub fn render_split(
     frame: &mut Frame,
     area: Rect,
     diff: &Diff,
     lines: &[DiffViewLine],
     scroll: usize,
+    cursor: usize,
     current_file: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
     diff_source: DiffSource,
     uncommitted_files: &HashSet<String>,
+    comments: &[Comment],
+    show_comments: bool,
+    visual_selection: Option<(usize, usize)>,
+    focused_comment: Option<i64>,
+    draft_comment: Option<&(String, usize, usize, String)>,
 ) {
     // Gutter width: always 2 chars for consistent layout
     let gutter_width = 2u16;
@@ -724,37 +1093,100 @@ pub fn render_split(
     let half_width = content_area.width.saturating_sub(gutter_width) / 2;
     let visible_height = content_area.height as usize;
 
-    let visible_lines: Vec<Line> = lines
-        .iter()
-        .skip(scroll)
-        .take(visible_height)
-        .map(|line| {
-            let mut rendered = render_split_line(line, current_file, collapsed, viewed, half_width as usize, content_area.width.saturating_sub(gutter_width));
+    // Build visible lines with visual selection highlighting and inline comments
+    let mut visible_lines: Vec<Line> = Vec::with_capacity(visible_height);
+    let mut line_idx = scroll;
+    let mut rendered_count = 0;
 
-            // Determine if this line's file has uncommitted changes
-            let file_path = diff.files.get(line.file_index).map(|f| &f.path);
-            let is_uncommitted = file_path
-                .map(|p| uncommitted_files.contains(p))
-                .unwrap_or(false);
+    while rendered_count < visible_height && line_idx < lines.len() {
+        let line = &lines[line_idx];
+        let absolute_line_idx = line_idx;
 
-            // Prepend gutter (always present for consistent layout)
-            let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
-                Style::default().fg(styles::FG_WARNING)
-            } else {
-                Style::default().fg(styles::FG_BORDER)
-            };
+        // Check if this line is part of visual selection
+        let is_selected = visual_selection
+            .map(|(start, end)| absolute_line_idx >= start && absolute_line_idx <= end)
+            .unwrap_or(false);
 
-            let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
-                "▎ " // Orange bar for uncommitted
-            } else {
-                "  " // Empty gutter
-            };
+        let mut rendered = render_split_line(line, current_file, collapsed, viewed, half_width as usize, content_area.width.saturating_sub(gutter_width));
 
-            let mut spans = vec![Span::styled(gutter_char, gutter_style)];
-            spans.extend(rendered.spans.drain(..));
-            Line::from(spans)
-        })
-        .collect();
+        // Apply visual selection highlighting
+        if is_selected {
+            rendered = apply_visual_selection_highlight(rendered);
+        }
+
+        // Determine if this line's file has uncommitted changes
+        let file_path = diff.files.get(line.file_index).map(|f| &f.path);
+        let is_uncommitted = file_path
+            .map(|p| uncommitted_files.contains(p))
+            .unwrap_or(false);
+
+        // Prepend gutter (always present for consistent layout)
+        let gutter_style = if diff_source == DiffSource::All && is_uncommitted {
+            Style::default().fg(styles::FG_WARNING)
+        } else if is_selected {
+            Style::default().fg(styles::FG_HUNK)
+        } else {
+            Style::default().fg(styles::FG_BORDER)
+        };
+
+        let gutter_char = if diff_source == DiffSource::All && is_uncommitted {
+            "▎ " // Orange bar for uncommitted
+        } else if is_selected {
+            "▌ " // Visual selection indicator
+        } else {
+            "  " // Empty gutter
+        };
+
+        let mut spans = vec![Span::styled(gutter_char, gutter_style)];
+        spans.extend(rendered.spans.drain(..));
+        visible_lines.push(Line::from(spans));
+        rendered_count += 1;
+
+        // Render inline comments for this line if enabled
+        if show_comments {
+            let file_path = diff.files.get(line.file_index).map(|f| f.path.as_str());
+            if let Some(path) = file_path {
+                for comment in comments.iter().filter(|c| {
+                    c.file_path == path && absolute_line_idx >= c.start_line && absolute_line_idx <= c.end_line
+                }) {
+                    // Only render comment after the last line of its range
+                    if absolute_line_idx == comment.end_line {
+                        let is_focused = focused_comment == Some(comment.id);
+                        let comment_lines = render_comment_box(comment, content_area.width, is_focused);
+                        for comment_line in comment_lines {
+                            if rendered_count >= visible_height {
+                                break;
+                            }
+                            visible_lines.push(comment_line);
+                            rendered_count += 1;
+                        }
+                    }
+                }
+
+                // Render draft comment if this is the end line of the draft
+                if let Some((draft_path, draft_start, draft_end, draft_body)) = draft_comment {
+                    if draft_path == path && absolute_line_idx == *draft_end {
+                        let draft_lines = render_draft_comment_box(
+                            draft_path,
+                            *draft_start,
+                            *draft_end,
+                            draft_body,
+                            content_area.width,
+                        );
+                        for draft_line in draft_lines {
+                            if rendered_count >= visible_height {
+                                break;
+                            }
+                            visible_lines.push(draft_line);
+                            rendered_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        line_idx += 1;
+    }
 
     let content = Paragraph::new(visible_lines);
     frame.render_widget(content, content_area);

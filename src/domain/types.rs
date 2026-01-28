@@ -160,3 +160,70 @@ impl BranchPreview {
         self.commits.len()
     }
 }
+
+/// A reply to a comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub id: i64,
+    pub comment_id: i64,
+    pub body: String,
+    pub author: String,
+    pub created_at: i64, // Unix timestamp in milliseconds
+}
+
+impl Reply {
+    pub fn relative_time(&self) -> String {
+        relative_time_from_millis(self.created_at)
+    }
+}
+
+/// A review comment/annotation on a range of lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub id: i64,
+    pub file_path: String,
+    /// Starting line in the diff (0-indexed into diff view lines)
+    pub start_line: usize,
+    /// Ending line in the diff (inclusive)
+    pub end_line: usize,
+    pub body: String,
+    pub author: String,
+    pub created_at: i64, // Unix timestamp in milliseconds
+    pub resolved: bool,
+    pub resolved_at: Option<i64>,
+    /// Replies to this comment
+    pub replies: Vec<Reply>,
+}
+
+impl Comment {
+    pub fn relative_time(&self) -> String {
+        relative_time_from_millis(self.created_at)
+    }
+
+    pub fn line_range_display(&self) -> String {
+        if self.start_line == self.end_line {
+            format!("L{}", self.start_line + 1)
+        } else {
+            format!("L{}-L{}", self.start_line + 1, self.end_line + 1)
+        }
+    }
+}
+
+/// Helper to format relative time from millisecond timestamp.
+fn relative_time_from_millis(ts: i64) -> String {
+    let now = chrono::Utc::now().timestamp_millis();
+    let diff = (now - ts) / 1000; // Convert to seconds
+
+    if diff < 60 {
+        "now".to_string()
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{}m ago", mins)
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{}h ago", hours)
+    } else {
+        let days = diff / 86400;
+        format!("{}d ago", days)
+    }
+}

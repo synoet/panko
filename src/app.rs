@@ -1,8 +1,9 @@
 //! Application state machine.
 
-use crate::domain::{BranchPreview, Diff};
+use crate::domain::{BranchPreview, Comment, Diff};
 use crate::ports::{
-    FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, StateStore, Terminal, TerminalEvent,
+    FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, StateStore, Terminal,
+    TerminalEvent,
 };
 use crate::ui::{diff_view, file_tree, layout};
 use anyhow::Result;
@@ -17,6 +18,10 @@ pub enum ViewMode {
     #[default]
     Normal,
     Help,
+    /// Visual mode for selecting lines to comment on
+    Visual,
+    /// Inputting a comment
+    CommentInput,
 }
 
 /// Which pane/input has focus.
@@ -52,7 +57,10 @@ pub struct App {
     pub diff_view_mode: diff_view::DiffViewMode,
     pub selected_tree_item: usize,
     pub current_file_index: usize,
+    /// Viewport scroll position (first visible line)
     pub scroll: usize,
+    /// Cursor position within the diff view (independent of scroll)
+    pub cursor: usize,
     pub collapsed_files: HashSet<usize>,
     pub viewed_files: HashSet<usize>,
     pub filter: String,
@@ -73,6 +81,22 @@ pub struct App {
     pub diff_source: DiffSource,
     // Set of file paths with uncommitted changes (for orange gutter in All mode)
     pub uncommitted_files: HashSet<String>,
+
+    // ─── Comment/annotation system ───
+    /// All comments for the current repo/branch
+    pub comments: Vec<Comment>,
+    /// Whether to show comments inline
+    pub show_comments: bool,
+    /// Visual selection anchor (the line where 'V' was pressed, uses cursor position)
+    pub visual_anchor: Option<usize>,
+    /// Current comment input buffer
+    pub comment_input: String,
+    /// The file path for the current comment being created
+    pub comment_file_path: Option<String>,
+    /// Author name for comments (from git config or default)
+    pub comment_author: String,
+    /// Currently focused comment (when navigating into a comment)
+    pub focused_comment: Option<i64>,
 }
 
 impl App {
@@ -119,21 +143,56 @@ impl App {
             selected_tree_item: 0,
             current_file_index: 0,
             scroll: 0,
+            cursor: 0,
             collapsed_files,
             viewed_files,
             filter: String::new(),
             should_quit: false,
             tree_state: ListState::default(),
             sidebar_collapsed: false,
-            repo_path,
-            branch: current_branch,
-            state_store,
+            repo_path: repo_path.clone(),
+            branch: current_branch.clone(),
+            state_store: state_store.clone(),
             file_watcher,
             has_pending_changes: false,
             viewed_timestamps,
             diff_source: DiffSource::Committed,
             uncommitted_files: HashSet::new(),
+            comments: Self::load_comments(&state_store, &repo_path, &current_branch),
+            show_comments: true,
+            visual_anchor: None,
+            comment_input: String::new(),
+            comment_file_path: None,
+            comment_author: Self::get_git_author(git),
+            focused_comment: None,
         })
+    }
+
+    /// Load comments from state store.
+    fn load_comments(
+        state_store: &Option<Arc<dyn StateStore>>,
+        repo_path: &str,
+        branch: &str,
+    ) -> Vec<Comment> {
+        state_store
+            .as_ref()
+            .and_then(|store| store.get_comments(repo_path, branch).ok())
+            .unwrap_or_default()
+    }
+
+    /// Get git author name for comments.
+    fn get_git_author(git: &dyn GitRepo) -> String {
+        // Try to get from git config, fallback to "You"
+        if let Ok(path) = git.workdir() {
+            if let Ok(repo) = git2::Repository::open(&path) {
+                if let Ok(config) = repo.config() {
+                    if let Ok(name) = config.get_string("user.name") {
+                        return name;
+                    }
+                }
+            }
+        }
+        "You".to_string()
     }
 
     /// Load viewed state from the state store, returning (viewed_files set by index, timestamps map).
@@ -268,12 +327,20 @@ impl App {
     }
 
     fn draw<T: Terminal>(&mut self, terminal: &mut T) -> Result<()> {
+        // Compute visual_selection first (before any mutable borrows)
+        // In normal mode, show cursor as a single-line "selection"
+        let visual_selection = match self.mode {
+            ViewMode::Visual | ViewMode::CommentInput => self.visual_selection(),
+            _ => Some((self.cursor, self.cursor)), // Show cursor line highlight
+        };
+
         let diff = &self.diff;
         let flat_items = &self.flat_items;
         let diff_lines = &self.diff_lines;
         let selected_tree_item = self.selected_tree_item;
         let current_file_index = self.current_file_index;
         let scroll = self.scroll;
+        let cursor = self.cursor;
         let collapsed = &self.collapsed_files;
         let viewed = &self.viewed_files;
         let filter = &self.filter;
@@ -287,6 +354,20 @@ impl App {
         let has_pending_changes = self.has_pending_changes;
         let diff_source = self.diff_source;
         let uncommitted_files = &self.uncommitted_files;
+        let comments = &self.comments;
+        let show_comments = self.show_comments;
+        let comment_input = &self.comment_input;
+        let focused_comment = self.focused_comment;
+
+        // Build draft comment for inline rendering during comment input mode
+        let draft_comment = if mode == ViewMode::CommentInput {
+            visual_selection.map(|(start, end)| {
+                let file_path = self.comment_file_path.clone().unwrap_or_default();
+                (file_path, start, end, self.comment_input.clone())
+            })
+        } else {
+            None
+        };
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -303,6 +384,7 @@ impl App {
                     selected_tree_item,
                     current_file_index,
                     scroll,
+                    cursor,
                     collapsed,
                     viewed,
                     filter,
@@ -315,12 +397,22 @@ impl App {
                     has_pending_changes,
                     diff_source,
                     uncommitted_files,
+                    comments,
+                    show_comments,
+                    visual_selection,
+                    focused_comment,
+                    draft_comment.as_ref(),
                 );
             }
 
+            // Render overlays
             if mode == ViewMode::Help {
                 layout::render_help(frame, area);
+            } else if mode == ViewMode::Visual {
+                // Show visual mode indicator in a status area
+                layout::render_visual_mode_hint(frame, area, visual_selection);
             }
+            // Note: CommentInput is now rendered inline, not as overlay
         })
     }
 
@@ -353,7 +445,17 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, git: &dyn GitRepo) -> Result<()> {
-        // Handle filter input mode first
+        // Handle comment input mode first
+        if self.mode == ViewMode::CommentInput {
+            return self.handle_comment_input_key(code);
+        }
+
+        // Handle visual mode
+        if self.mode == ViewMode::Visual {
+            return self.handle_visual_mode_key(code);
+        }
+
+        // Handle filter input mode
         if self.focus == Focus::FilterInput {
             return self.handle_filter_key(code);
         }
@@ -397,6 +499,12 @@ impl App {
             return Ok(());
         }
 
+        // 'C' to toggle show/hide comments
+        if code == KeyCode::Char('C') {
+            self.show_comments = !self.show_comments;
+            return Ok(());
+        }
+
         // Tab to switch focus
         if code == KeyCode::Tab {
             self.focus = match self.focus {
@@ -429,6 +537,12 @@ impl App {
             return Ok(());
         }
 
+        // 'V' to enter visual mode (only in diff view)
+        if code == KeyCode::Char('v') && self.focus == Focus::DiffView {
+            self.enter_visual_mode();
+            return Ok(());
+        }
+
         match self.focus {
             Focus::FileTree => self.handle_tree_key(code),
             Focus::DiffView => self.handle_diff_key(code),
@@ -452,6 +566,151 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    // ─── Visual mode for line selection ───
+
+    fn enter_visual_mode(&mut self) {
+        self.mode = ViewMode::Visual;
+        // Anchor at current cursor position
+        self.visual_anchor = Some(self.cursor);
+        // Determine the file path for the current line
+        if let Some(line) = self.diff_lines.get(self.cursor) {
+            if let Some(file) = self.diff.files.get(line.file_index) {
+                self.comment_file_path = Some(file.path.clone());
+            }
+        }
+    }
+
+    fn exit_visual_mode(&mut self) {
+        self.mode = ViewMode::Normal;
+        self.visual_anchor = None;
+        self.comment_file_path = None;
+    }
+
+    fn handle_visual_mode_key(&mut self, code: KeyCode) -> Result<()> {
+        let max_line = self.diff_lines.len().saturating_sub(1);
+
+        match code {
+            KeyCode::Esc => {
+                self.exit_visual_mode();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                // Extend selection by moving cursor down
+                if self.cursor < max_line {
+                    self.cursor += 1;
+                    self.ensure_cursor_visible();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                // Extend selection by moving cursor up
+                self.cursor = self.cursor.saturating_sub(1);
+                self.ensure_cursor_visible();
+            }
+            KeyCode::Char('c') | KeyCode::Enter => {
+                // Open comment input
+                self.mode = ViewMode::CommentInput;
+                self.comment_input.clear();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Get the visual selection range (start_line, end_line) sorted.
+    pub fn visual_selection(&self) -> Option<(usize, usize)> {
+        self.visual_anchor.map(|anchor| {
+            let start = anchor.min(self.cursor);
+            let end = anchor.max(self.cursor);
+            (start, end)
+        })
+    }
+
+    // ─── Comment input mode ───
+
+    fn handle_comment_input_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                // Cancel comment input, return to visual mode
+                self.mode = ViewMode::Visual;
+                self.comment_input.clear();
+            }
+            KeyCode::Enter => {
+                // Submit comment if not empty
+                if !self.comment_input.trim().is_empty() {
+                    self.submit_comment();
+                }
+                self.exit_visual_mode();
+                self.comment_input.clear();
+            }
+            KeyCode::Char(c) => {
+                self.comment_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.comment_input.pop();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn submit_comment(&mut self) {
+        let Some((start_line, end_line)) = self.visual_selection() else {
+            return;
+        };
+        let Some(file_path) = self.comment_file_path.clone() else {
+            return;
+        };
+
+        let new_comment = NewComment {
+            file_path,
+            start_line,
+            end_line,
+            body: self.comment_input.trim().to_string(),
+            author: self.comment_author.clone(),
+        };
+
+        // Save to state store
+        if let Some(ref store) = self.state_store {
+            if let Ok(id) = store.add_comment(&self.repo_path, &self.branch, new_comment.clone()) {
+                // Add to local comments list
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+
+                self.comments.push(Comment {
+                    id,
+                    file_path: new_comment.file_path,
+                    start_line: new_comment.start_line,
+                    end_line: new_comment.end_line,
+                    body: new_comment.body,
+                    author: new_comment.author,
+                    created_at: now,
+                    resolved: false,
+                    resolved_at: None,
+                    replies: vec![],
+                });
+            }
+        }
+    }
+
+    /// Toggle resolved status of a comment at the current cursor position.
+    pub fn toggle_comment_resolved(&mut self) {
+        // Find a comment that covers the current cursor position
+        let cursor = self.cursor;
+        if let Some(comment) = self.comments.iter_mut().find(|c| {
+            cursor >= c.start_line && cursor <= c.end_line
+        }) {
+            comment.resolved = !comment.resolved;
+            if let Some(ref store) = self.state_store {
+                if comment.resolved {
+                    let _ = store.resolve_comment(comment.id);
+                } else {
+                    let _ = store.unresolve_comment(comment.id);
+                }
+            }
+        }
     }
 
     fn handle_tree_key(&mut self, code: KeyCode) -> Result<()> {
@@ -499,7 +758,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('v') => {
+            KeyCode::Char('x') => {
                 // Toggle viewed status for current file
                 if let Some(item) = self.flat_items.get(self.selected_tree_item) {
                     if let Some(file_idx) = item.file_index {
@@ -542,51 +801,61 @@ impl App {
     }
 
     fn handle_diff_key(&mut self, code: KeyCode) -> Result<()> {
-        let max_scroll = self.diff_lines.len().saturating_sub(1);
+        let max_line = self.diff_lines.len().saturating_sub(1);
         let file_count = self.diff.files.len();
 
         match code {
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.scroll < max_scroll {
-                    self.scroll += 1;
-                }
+                self.move_cursor_down(max_line);
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.scroll = self.scroll.saturating_sub(1);
+                self.move_cursor_up();
             }
-            KeyCode::PageDown => {
-                self.scroll = (self.scroll + 20).min(max_scroll);
+            KeyCode::PageDown | KeyCode::Char('d') => {
+                // Page down - skip comment focus
+                self.focused_comment = None;
+                self.cursor = (self.cursor + 20).min(max_line);
+                self.sync_from_cursor();
             }
             KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(20);
+                // Page up
+                self.focused_comment = None;
+                self.cursor = self.cursor.saturating_sub(20);
+                self.sync_from_cursor();
             }
             KeyCode::Char('n') => {
                 // Next file
+                self.focused_comment = None;
                 if self.current_file_index < file_count.saturating_sub(1) {
                     self.current_file_index += 1;
-                    self.scroll =
-                        diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.cursor = file_start;
+                    self.scroll = file_start;
                     self.sync_tree_selection();
                 }
             }
             KeyCode::Char('p') => {
                 // Previous file
+                self.focused_comment = None;
                 if self.current_file_index > 0 {
                     self.current_file_index -= 1;
-                    self.scroll =
-                        diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.cursor = file_start;
+                    self.scroll = file_start;
                     self.sync_tree_selection();
                 }
             }
             KeyCode::Char('g') => {
+                self.focused_comment = None;
+                self.cursor = 0;
                 self.scroll = 0;
-                self.current_file_index = 0;
-                self.sync_tree_selection();
+                self.sync_from_cursor();
             }
             KeyCode::Char('G') => {
-                self.scroll = max_scroll;
-                self.current_file_index = file_count.saturating_sub(1);
-                self.sync_tree_selection();
+                self.focused_comment = None;
+                self.cursor = max_line;
+                self.scroll = max_line.saturating_sub(20);
+                self.sync_from_cursor();
             }
             KeyCode::Char('c') => {
                 // Toggle collapse for current file
@@ -597,13 +866,21 @@ impl App {
                 }
                 self.rebuild_diff_lines();
             }
-            KeyCode::Char('v') => {
+            KeyCode::Char('x') => {
                 // Toggle viewed status for current file
                 self.toggle_viewed(self.current_file_index);
             }
+            KeyCode::Char('R') => {
+                // Toggle resolved status for focused comment or comment at cursor
+                if let Some(comment_id) = self.focused_comment {
+                    self.toggle_comment_resolved_by_id(comment_id);
+                } else {
+                    self.toggle_comment_resolved();
+                }
+            }
             KeyCode::Enter => {
-                // Toggle collapse on the current file when on its header
-                if let Some(line) = self.diff_lines.get(self.scroll) {
+                // Toggle collapse on the current file when cursor is on its header
+                if let Some(line) = self.diff_lines.get(self.cursor) {
                     if line.kind == diff_view::LineKind::FileHeader {
                         let file_idx = line.file_index;
                         if self.collapsed_files.contains(&file_idx) {
@@ -618,6 +895,99 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Move cursor down, handling comment navigation.
+    fn move_cursor_down(&mut self, max_line: usize) {
+        if let Some(_comment_id) = self.focused_comment {
+            // Currently focused on a comment, exit it and move to next line
+            self.focused_comment = None;
+            if self.cursor < max_line {
+                self.cursor += 1;
+            }
+        } else if self.show_comments {
+            // Check if there's a comment ending at current cursor that we should enter
+            if let Some(comment) = self.find_comment_at_cursor_end() {
+                self.focused_comment = Some(comment.id);
+            } else if self.cursor < max_line {
+                self.cursor += 1;
+            }
+        } else if self.cursor < max_line {
+            self.cursor += 1;
+        }
+        self.sync_from_cursor();
+    }
+
+    /// Move cursor up, handling comment navigation.
+    fn move_cursor_up(&mut self) {
+        if let Some(_comment_id) = self.focused_comment {
+            // Currently focused on a comment, exit it (stay on same line)
+            self.focused_comment = None;
+        } else if self.cursor > 0 {
+            self.cursor -= 1;
+            // Check if we should enter a comment above (at previous line's end)
+            if self.show_comments {
+                if let Some(comment) = self.find_comment_at_cursor_end() {
+                    self.focused_comment = Some(comment.id);
+                }
+            }
+        }
+        self.sync_from_cursor();
+    }
+
+    /// Find a comment that ends at the current cursor position.
+    fn find_comment_at_cursor_end(&self) -> Option<&Comment> {
+        let cursor = self.cursor;
+        let file_path = self.diff_lines.get(cursor)
+            .and_then(|line| self.diff.files.get(line.file_index))
+            .map(|f| f.path.as_str());
+
+        file_path.and_then(|path| {
+            self.comments.iter().find(|c| {
+                c.file_path == path && c.end_line == cursor
+            })
+        })
+    }
+
+    /// Sync current_file_index and tree selection from cursor position.
+    fn sync_from_cursor(&mut self) {
+        self.ensure_cursor_visible();
+
+        // Update current_file_index from cursor
+        if let Some(line) = self.diff_lines.get(self.cursor) {
+            if self.current_file_index != line.file_index {
+                self.current_file_index = line.file_index;
+                self.sync_tree_selection();
+            }
+        }
+    }
+
+    /// Toggle resolved by comment ID.
+    fn toggle_comment_resolved_by_id(&mut self, comment_id: i64) {
+        if let Some(comment) = self.comments.iter_mut().find(|c| c.id == comment_id) {
+            comment.resolved = !comment.resolved;
+            if let Some(ref store) = self.state_store {
+                if comment.resolved {
+                    let _ = store.resolve_comment(comment.id);
+                } else {
+                    let _ = store.unresolve_comment(comment.id);
+                }
+            }
+        }
+    }
+
+    /// Ensure the cursor is visible in the viewport.
+    fn ensure_cursor_visible(&mut self) {
+        // Use a reasonable viewport height estimate (will be approximate until we have frame size)
+        let viewport_height = 30;
+
+        if self.cursor < self.scroll {
+            // Cursor above viewport
+            self.scroll = self.cursor;
+        } else if self.cursor >= self.scroll + viewport_height {
+            // Cursor below viewport
+            self.scroll = self.cursor.saturating_sub(viewport_height - 1);
+        }
     }
 
     fn sync_tree_selection(&mut self) {

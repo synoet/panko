@@ -1,11 +1,11 @@
 //! Main layout orchestrating file tree and diff view.
 
 use crate::app::DiffSource;
-use crate::domain::Diff;
+use crate::domain::{Comment, Diff};
 use crate::ui::{diff_view, file_tree, styles};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, ListState, Padding, Paragraph},
     Frame,
@@ -23,6 +23,7 @@ pub fn render_main(
     selected_tree_item: usize,
     current_file_index: usize,
     scroll: usize,
+    cursor: usize,
     collapsed: &HashSet<usize>,
     viewed: &HashSet<usize>,
     filter: &str,
@@ -35,6 +36,11 @@ pub fn render_main(
     has_pending_changes: bool,
     diff_source: DiffSource,
     uncommitted_files: &HashSet<String>,
+    comments: &[Comment],
+    show_comments: bool,
+    visual_selection: Option<(usize, usize)>,
+    focused_comment: Option<i64>,
+    draft_comment: Option<&(String, usize, usize, String)>, // (file_path, start, end, body)
 ) {
     // Split into header and main content area (with padding below header)
     let vertical_chunks = Layout::default()
@@ -63,11 +69,17 @@ pub fn render_main(
                     diff,
                     diff_lines,
                     scroll,
+                    cursor,
                     current_file_index,
                     collapsed,
                     viewed,
                     diff_source,
                     uncommitted_files,
+                    comments,
+                    show_comments,
+                    visual_selection,
+                    focused_comment,
+                    draft_comment,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -77,11 +89,17 @@ pub fn render_main(
                     diff,
                     diff_lines,
                     scroll,
+                    cursor,
                     current_file_index,
                     collapsed,
                     viewed,
                     diff_source,
                     uncommitted_files,
+                    comments,
+                    show_comments,
+                    visual_selection,
+                    focused_comment,
+                    draft_comment,
                 );
             }
         }
@@ -124,11 +142,17 @@ pub fn render_main(
                     diff,
                     diff_lines,
                     scroll,
+                    cursor,
                     current_file_index,
                     collapsed,
                     viewed,
                     diff_source,
                     uncommitted_files,
+                    comments,
+                    show_comments,
+                    visual_selection,
+                    focused_comment,
+                    draft_comment,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -138,15 +162,108 @@ pub fn render_main(
                     diff,
                     diff_lines,
                     scroll,
+                    cursor,
                     current_file_index,
                     collapsed,
                     viewed,
                     diff_source,
                     uncommitted_files,
+                    comments,
+                    show_comments,
+                    visual_selection,
+                    focused_comment,
+                    draft_comment,
                 );
             }
         }
     }
+}
+
+/// Render comment input overlay.
+pub fn render_comment_input(
+    frame: &mut Frame,
+    area: Rect,
+    comment_text: &str,
+    selection: Option<(usize, usize)>,
+) {
+    let popup_area = centered_rect(60, 30, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let selection_info = selection
+        .map(|(start, end)| {
+            if start == end {
+                format!("Line {}", start + 1)
+            } else {
+                format!("Lines {}-{}", start + 1, end + 1)
+            }
+        })
+        .unwrap_or_default();
+
+    let title = format!(" Add comment ({}) ", selection_info);
+
+    let input_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(comment_text, Style::default().fg(styles::FG_DEFAULT)),
+            Span::styled("█", Style::default().fg(styles::FG_HUNK)), // Cursor
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter to submit, Esc to cancel",
+            styles::style_muted(),
+        )),
+    ];
+
+    let input = Paragraph::new(input_lines).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(styles::FG_HUNK))
+            .padding(Padding::uniform(1))
+            .style(Style::default().bg(styles::BG_SIDEBAR)),
+    );
+
+    frame.render_widget(input, popup_area);
+}
+
+/// Render visual mode hint at the bottom of the screen.
+pub fn render_visual_mode_hint(
+    frame: &mut Frame,
+    area: Rect,
+    selection: Option<(usize, usize)>,
+) {
+    let selection_info = selection
+        .map(|(start, end)| {
+            if start == end {
+                format!("Line {}", start + 1)
+            } else {
+                format!("Lines {}-{}", start + 1, end + 1)
+            }
+        })
+        .unwrap_or_default();
+
+    let hint_area = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(1),
+        width: area.width,
+        height: 1,
+    };
+
+    let hint = Line::from(vec![
+        Span::styled(" VISUAL ", Style::default().fg(styles::BG_DEFAULT).bg(styles::FG_HUNK).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", selection_info), Style::default().fg(styles::FG_DEFAULT).bg(styles::BG_SELECTED)),
+        Span::styled(" c", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" comment ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(" j/k", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" extend ", Style::default().fg(styles::FG_MUTED)),
+        Span::styled(" Esc", Style::default().fg(styles::FG_HUNK)),
+        Span::styled(" cancel", Style::default().fg(styles::FG_MUTED)),
+    ]);
+
+    let hint_para = Paragraph::new(vec![hint]);
+    frame.render_widget(hint_para, hint_area);
 }
 
 /// Render the global header spanning full width.
@@ -206,7 +323,7 @@ fn render_global_header(
 
     spans.extend([
         Span::styled("  │  ", Style::default().fg(styles::FG_MUTED)),
-        Span::styled("v", Style::default().fg(styles::FG_HUNK)),
+        Span::styled("x", Style::default().fg(styles::FG_HUNK)),
         Span::styled(" viewed  ", Style::default().fg(styles::FG_MUTED)),
         Span::styled("b", Style::default().fg(styles::FG_HUNK)),
         Span::styled(format!(" {}  ", sidebar_hint), Style::default().fg(styles::FG_MUTED)),
@@ -270,7 +387,7 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
             Span::raw("Focus filter input"),
         ]),
         Line::from(vec![
-            Span::styled("  v         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::styled("  x         ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Mark file as viewed"),
         ]),
         Line::from(vec![
@@ -292,6 +409,24 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  u         ", Style::default().fg(styles::FG_ADDITION)),
             Span::raw("Cycle diff source (committed/uncommitted/all)"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Comments", styles::style_muted())),
+        Line::from(vec![
+            Span::styled("  V         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Enter visual mode (select lines)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c (visual)", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Add comment on selection"),
+        ]),
+        Line::from(vec![
+            Span::styled("  R         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Toggle comment resolved"),
+        ]),
+        Line::from(vec![
+            Span::styled("  C         ", Style::default().fg(styles::FG_ADDITION)),
+            Span::raw("Show/hide comments"),
         ]),
         Line::from(""),
         Line::from(Span::styled("  General", styles::style_muted())),
