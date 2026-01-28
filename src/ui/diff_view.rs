@@ -936,11 +936,15 @@ pub fn render_unified(
         (None, area)
     };
 
-    // Render sticky header if present
+    // Render sticky header if present (with gutter space to match content)
     if let (Some(sticky_rect), Some((path, stats, file_idx))) = (sticky_area, sticky_header) {
         let is_viewed = viewed.contains(&file_idx);
-        let sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, sticky_rect.width);
-        let sticky_para = Paragraph::new(vec![sticky_line]);
+        let sticky_line = render_sticky_header(&path, &stats, file_idx, current_file, collapsed, is_viewed, content_width);
+        // Prepend gutter space to match content alignment
+        let gutter_span = Span::styled("  ", Style::default());
+        let mut full_line = vec![gutter_span];
+        full_line.extend(sticky_line.spans);
+        let sticky_para = Paragraph::new(vec![Line::from(full_line)]);
         frame.render_widget(sticky_para, sticky_rect);
     }
 
@@ -1049,7 +1053,8 @@ pub fn render_unified(
         line_idx += 1;
     }
 
-    let content = Paragraph::new(visible_lines);
+    let content = Paragraph::new(visible_lines)
+        .style(Style::default().bg(styles::BG_DEFAULT));
     frame.render_widget(content, content_area);
 
     if lines.len() > visible_height {
@@ -1208,7 +1213,8 @@ pub fn render_split(
         line_idx += 1;
     }
 
-    let content = Paragraph::new(visible_lines);
+    let content = Paragraph::new(visible_lines)
+        .style(Style::default().bg(styles::BG_DEFAULT));
     frame.render_widget(content, content_area);
 
     if lines.len() > visible_height {
@@ -1239,7 +1245,7 @@ fn find_sticky_header(lines: &[DiffViewLine], scroll: usize, _current_file: usiz
     None
 }
 
-/// Render a sticky file header.
+/// Render a sticky file header (matches render_file_header_top style).
 fn render_sticky_header(
     path: &str,
     stats: &DiffStats,
@@ -1253,36 +1259,36 @@ fn render_sticky_header(
     let is_collapsed = collapsed.contains(&file_index);
     let is_current = file_index == current_file;
 
-    let toggle = if is_collapsed { "▶" } else { "▼" };
-    let checkbox = if is_viewed { "☑" } else { "☐" };
-    let border_style = if is_current { styles::style_border_selected() } else { styles::style_border() };
-    let header_bg = styles::BG_FILE_HEADER; // Sticky header always uses standard bg
+    let toggle = if is_collapsed { "›" } else { "⌄" };
+    let viewed_icon = if is_viewed { " ✓" } else { "" };
+    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
+    let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
 
-    let total = stats.additions + stats.deletions;
-    let bar_width = 5;
-    let add_chars = if total > 0 { (stats.additions * bar_width / total).min(bar_width) } else { 0 };
-    let del_chars = bar_width - add_chars;
-    let add_bar: String = "█".repeat(add_chars);
-    let del_bar: String = "█".repeat(del_chars);
+    let add_str = format!("+{}", stats.additions);
+    let del_str = format!("-{}", stats.deletions);
 
-    let stats_display = format!("+{} -{} ", stats.additions, stats.deletions);
-    let right_len = stats_display.len() + bar_width + 4; // +4 for checkbox
-    let left_content = format!(" {} {}", toggle, path);
-    let left_len = left_content.len();
-    let inner_width = w.saturating_sub(2);
+    // Calculate exact widths for alignment
+    // Left: space + toggle + space + path
+    let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
+    // Right: +N + 2 spaces + -M + viewed + trailing space
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + 1;
+
+    let inner_width = w.saturating_sub(2); // subtract borders
     let padding_len = inner_width.saturating_sub(left_len + right_len);
 
     Line::from(vec![
-        Span::styled(styles::BORDER_VERTICAL, border_style),
-        Span::styled(left_content, Style::default().fg(styles::FG_PATH).bg(header_bg)),
-        Span::styled(" ".repeat(padding_len), Style::default().bg(header_bg)),
-        Span::styled(checkbox, Style::default().fg(if is_viewed { styles::FG_ADDITION } else { styles::FG_MUTED }).bg(header_bg)),
-        Span::styled(" ", Style::default().bg(header_bg)),
-        Span::styled(stats_display, Style::default().fg(styles::FG_DEFAULT).bg(header_bg)),
-        Span::styled(add_bar, styles::style_stat_addition().bg(header_bg)),
-        Span::styled(del_bar, styles::style_stat_deletion().bg(header_bg)),
-        Span::styled(" ", Style::default().bg(header_bg)),
-        Span::styled(styles::BORDER_VERTICAL, border_style),
+        Span::styled("╭", Style::default().fg(border_color)),
+        Span::styled(
+            format!(" {} {}", toggle, path),
+            Style::default().fg(path_color).add_modifier(if is_current { Modifier::BOLD } else { Modifier::empty() }),
+        ),
+        Span::styled(" ".repeat(padding_len), Style::default()),
+        Span::styled(add_str, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled("  ", Style::default()),
+        Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
+        Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(" ", Style::default()),
+        Span::styled("╮", Style::default().fg(border_color)),
     ])
 }
 
@@ -1295,6 +1301,8 @@ fn render_unified_line(
     width: u16,
 ) -> Line<'static> {
     let w = width as usize;
+    let is_current_file = line.file_index == current_file;
+    let border_style = if is_current_file { styles::style_border_selected() } else { styles::style_border() };
 
     match &line.content {
         LineContent::FileHeaderTop { path, stats } => {
@@ -1308,15 +1316,15 @@ fn render_unified_line(
             let inner_width = w.saturating_sub(2);
             let expand_area = "  ⋯  ";
             let hunk_text = format!(" {} ", text);
-            let used_width = expand_area.len() + hunk_text.len();
+            let used_width = expand_area.chars().count() + hunk_text.chars().count();
             let padding_len = inner_width.saturating_sub(used_width);
 
             Line::from(vec![
-                Span::styled(styles::BORDER_VERTICAL, styles::style_border()),
+                Span::styled(styles::BORDER_VERTICAL, border_style),
                 Span::styled(expand_area, Style::default().fg(styles::FG_HUNK).bg(styles::BG_HUNK_EXPAND)),
                 Span::styled(hunk_text, styles::style_hunk_header()),
                 Span::styled(" ".repeat(padding_len), Style::default().bg(styles::BG_HUNK_HEADER)),
-                Span::styled(styles::BORDER_VERTICAL, styles::style_border()),
+                Span::styled(styles::BORDER_VERTICAL, border_style),
             ])
         }
         LineContent::UnifiedLine {
@@ -1337,7 +1345,7 @@ fn render_unified_line(
             let content_width = w.saturating_sub(14);
 
             let mut spans = Vec::with_capacity(segments.len() + 6);
-            spans.push(Span::styled(styles::BORDER_VERTICAL, styles::style_border()));
+            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
 
             // Line numbers with optional background
             let line_num_style = if let Some(bg) = margin_bg {
@@ -1396,7 +1404,7 @@ fn render_unified_line(
                 spans.push(Span::styled(" ".repeat(content_width - char_count), pad_style));
             }
 
-            spans.push(Span::styled(styles::BORDER_VERTICAL, styles::style_border()));
+            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
             Line::from(spans)
         }
         LineContent::Empty => {
@@ -1419,51 +1427,51 @@ fn render_file_header_top(
     let is_collapsed = collapsed.contains(&file_index);
     let is_current = file_index == current_file;
 
-    let toggle = if is_collapsed { "▶" } else { "▼" };
-    let checkbox = if is_viewed { "☑" } else { "☐" };
-    let border_style = if is_current { styles::style_border_selected() } else { styles::style_border() };
-    let header_bg = if is_current { styles::BG_SELECTED } else { styles::BG_FILE_HEADER };
+    let toggle = if is_collapsed { "›" } else { "⌄" };
+    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
+    let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
 
-    let total = stats.additions + stats.deletions;
-    let bar_width = 5;
-    let add_chars = if total > 0 { (stats.additions * bar_width / total).min(bar_width) } else { 0 };
-    let del_chars = bar_width - add_chars;
-    let add_bar: String = "█".repeat(add_chars);
-    let del_bar: String = "█".repeat(del_chars);
+    // Stats on right
+    let add_str = format!("+{}", stats.additions);
+    let del_str = format!("-{}", stats.deletions);
+    let viewed_icon = if is_viewed { " ✓" } else { "" };
 
-    let stats_display = format!("+{} -{} ", stats.additions, stats.deletions);
-    let right_len = stats_display.len() + bar_width + 4; // +4 for checkbox and space
-    let left_content = format!(" {} {}", toggle, path);
-    let left_len = left_content.len();
-    let inner_width = w.saturating_sub(2);
+    // Calculate exact widths for alignment
+    // Left: space + toggle + space + path
+    let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
+    // Right: +N + 2 spaces + -M + viewed + trailing space
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + 1;
+
+    let inner_width = w.saturating_sub(2); // subtract borders
     let padding_len = inner_width.saturating_sub(left_len + right_len);
 
     Line::from(vec![
-        Span::styled(styles::BORDER_TOP_LEFT, border_style),
-        Span::styled(left_content, Style::default().fg(styles::FG_PATH).bg(header_bg)),
-        Span::styled(" ".repeat(padding_len), Style::default().bg(header_bg)),
-        Span::styled(checkbox, Style::default().fg(if is_viewed { styles::FG_ADDITION } else { styles::FG_MUTED }).bg(header_bg)),
-        Span::styled(" ", Style::default().bg(header_bg)),
-        Span::styled(stats_display, Style::default().fg(styles::FG_DEFAULT).bg(header_bg)),
-        Span::styled(add_bar, styles::style_stat_addition().bg(header_bg)),
-        Span::styled(del_bar, styles::style_stat_deletion().bg(header_bg)),
-        Span::styled(" ", Style::default().bg(header_bg)),
-        Span::styled(styles::BORDER_TOP_RIGHT, border_style),
+        Span::styled("╭", Style::default().fg(border_color)),
+        Span::styled(
+            format!(" {} {}", toggle, path),
+            Style::default().fg(path_color).add_modifier(if is_current { Modifier::BOLD } else { Modifier::empty() }),
+        ),
+        Span::styled(" ".repeat(padding_len), Style::default()),
+        Span::styled(add_str, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled("  ", Style::default()),
+        Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
+        Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(" ", Style::default()),
+        Span::styled("╮", Style::default().fg(border_color)),
     ])
 }
 
 fn render_file_header_bottom(file_index: usize, current_file: usize, width: u16) -> Line<'static> {
     let w = width as usize;
     let is_current = file_index == current_file;
-    let border_style = if is_current { styles::style_border_selected() } else { styles::style_border() };
+    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
 
     let inner_width = w.saturating_sub(2);
-    let border_line = styles::BORDER_HORIZONTAL.repeat(inner_width);
 
     Line::from(vec![
-        Span::styled(styles::BORDER_BOTTOM_LEFT, border_style),
-        Span::styled(border_line, border_style),
-        Span::styled(styles::BORDER_BOTTOM_RIGHT, border_style),
+        Span::styled("╰", Style::default().fg(border_color)),
+        Span::styled("─".repeat(inner_width), Style::default().fg(border_color)),
+        Span::styled("╯", Style::default().fg(border_color)),
     ])
 }
 
@@ -1477,6 +1485,8 @@ fn render_split_line(
     full_width: u16,
 ) -> Line<'static> {
     let w = full_width as usize;
+    let is_current_file = line.file_index == current_file;
+    let border_style = if is_current_file { styles::style_border_selected() } else { styles::style_border() };
 
     match &line.content {
         LineContent::FileHeaderTop { path, stats } => {
@@ -1490,15 +1500,15 @@ fn render_split_line(
             let inner_width = w.saturating_sub(2);
             let expand_area = "  ⋯  ";
             let hunk_text = format!(" {} ", text);
-            let used_width = expand_area.len() + hunk_text.len();
+            let used_width = expand_area.chars().count() + hunk_text.chars().count();
             let padding_len = inner_width.saturating_sub(used_width);
 
             Line::from(vec![
-                Span::styled(styles::BORDER_VERTICAL, styles::style_border()),
+                Span::styled(styles::BORDER_VERTICAL, border_style),
                 Span::styled(expand_area, Style::default().fg(styles::FG_HUNK).bg(styles::BG_HUNK_EXPAND)),
                 Span::styled(hunk_text, styles::style_hunk_header()),
                 Span::styled(" ".repeat(padding_len), Style::default().bg(styles::BG_HUNK_HEADER)),
-                Span::styled(styles::BORDER_VERTICAL, styles::style_border()),
+                Span::styled(styles::BORDER_VERTICAL, border_style),
             ])
         }
         LineContent::SplitLine {
@@ -1535,7 +1545,7 @@ fn render_split_line(
             let mut spans = Vec::with_capacity(old_segments.len() + new_segments.len() + 8);
 
             // Left border and old line number
-            spans.push(Span::styled(styles::BORDER_VERTICAL, styles::style_border()));
+            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
             let old_num_style = if let Some(bg) = old_margin_bg {
                 Style::default().fg(styles::FG_LINE_NUM).bg(bg)
             } else {
@@ -1628,7 +1638,7 @@ fn render_split_line(
                 spans.push(Span::styled(" ".repeat(side_content_width - char_count), pad_style));
             }
 
-            spans.push(Span::styled(styles::BORDER_VERTICAL, styles::style_border()));
+            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
             Line::from(spans)
         }
         LineContent::Empty => {

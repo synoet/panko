@@ -331,7 +331,7 @@ impl App {
 
     fn draw<T: Terminal>(&mut self, terminal: &mut T) -> Result<()> {
         // Update viewport height from terminal size
-        // Subtract: header (3) + status bar (1) + sticky header (1) + margin (1)
+        // Subtract: header (2) + status bar (2) + sticky header (1) + margin (1)
         if let Ok((_, height)) = terminal.size() {
             self.viewport_height = (height as usize).saturating_sub(6);
         }
@@ -412,17 +412,15 @@ impl App {
                     focused_comment,
                     draft_comment.as_ref(),
                     focus,
+                    mode,
                 );
             }
 
             // Render overlays
             if mode == ViewMode::Help {
                 layout::render_help(frame, area);
-            } else if mode == ViewMode::Visual {
-                // Show visual mode indicator in a status area
-                layout::render_visual_mode_hint(frame, area, visual_selection);
             }
-            // Note: CommentInput is now rendered inline, not as overlay
+            // Note: Visual mode and CommentInput are shown in the status bar
         })
     }
 
