@@ -1,6 +1,6 @@
-# revs - Code Review Comments
+# panko - Code Review Comments
 
-Use this skill when the user asks you to work with code review comments in a `revs` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
+Use this skill when the user asks you to work with code review comments in a `panko` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
 
 ## When to Use
 
@@ -13,66 +13,66 @@ Use this skill when the user asks you to work with code review comments in a `re
 
 ### List all comments
 ```bash
-revs comments
+panko comments
 ```
 
 ### List only open (unresolved) comments
 ```bash
-revs comments --status open
+panko comments --status open
 ```
 
 ### List resolved comments
 ```bash
-revs comments --status resolved
+panko comments --status resolved
 ```
 
 ### Get JSON output (for parsing)
 ```bash
-revs comments --format json
+panko comments --format json
 ```
 
 ### Resolve a comment by ID
 ```bash
-revs resolve <comment_id>
+panko resolve <comment_id>
 ```
 
 ### Unresolve a comment (reopen)
 ```bash
-revs unresolve <comment_id>
+panko unresolve <comment_id>
 ```
 
 ### Reply to a comment
 ```bash
-revs reply <comment_id> --message "Your reply here"
-revs reply <comment_id> --message "Your reply" --author "Claude"  # specify author
+panko reply <comment_id> --message "Your reply here"
+panko reply <comment_id> --message "Your reply" --author "Claude"  # specify author
 ```
 
 ### Add a new comment
 ```bash
-revs comment <file_path> <start_line> <end_line> --message "Your comment"
-revs comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
+panko comment <file_path> <start_line> <end_line> --message "Your comment"
+panko comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
 ```
 
 ### Delete a comment
 ```bash
-revs delete <comment_id>
+panko delete <comment_id>
 ```
 
 ### Show a specific comment thread
 ```bash
-revs show <comment_id>
-revs show <comment_id> --format json
+panko show <comment_id>
+panko show <comment_id> --format json
 ```
 
 ## Workflow
 
 When the user asks you to address review comments:
 
-1. **List open comments**: `revs comments --status open`
+1. **List open comments**: `panko comments --status open`
 2. **Read each comment** to understand what needs to be done
 3. **Make the code changes** to address each comment
-4. **Reply to the comment** explaining what you did: `revs reply <id> --message "Fixed by..."`
-5. **Resolve the comment**: `revs resolve <id>`
+4. **Reply to the comment** explaining what you did: `panko reply <id> --message "Fixed by..."`
+5. **Resolve the comment**: `panko resolve <id>`
 6. **Verify** by listing open comments again
 
 ## Output Format
@@ -121,7 +121,7 @@ When the user asks you to address review comments:
 User: Check if there are any review comments I need to address
 
 AI: Let me check for open review comments.
-[runs: revs comments --status open]
+[runs: panko comments --status open]
 
 Found 2 open comments:
 
@@ -136,20 +136,20 @@ AI: I'll address each comment:
 
 **Comment #3 - Rate limiting**
 [makes changes to src/auth.rs]
-[runs: revs reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
-[runs: revs resolve 3]
+[runs: panko reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
+[runs: panko resolve 3]
 
 **Comment #5 - SQL injection**
 [makes changes to src/api/users.rs]
-[runs: revs reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
-[runs: revs resolve 5]
+[runs: panko reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
+[runs: panko resolve 5]
 
 Done! Both comments have been addressed and resolved.
 ```
 
 ## Notes
 
-- Comments are stored locally in SQLite at `~/.config/revs/state.db` (macOS: `~/Library/Application Support/revs/`)
+- Comments are stored locally in SQLite at `~/.config/panko/state.db` (macOS: `~/Library/Application Support/panko/`)
 - Comments are scoped to repo + branch, so switching branches shows different comments
 - Line numbers refer to actual source file lines (in the new/right side of the diff)
 - The `--author` flag lets agents identify themselves (defaults to git user name)

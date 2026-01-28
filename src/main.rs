@@ -1,4 +1,4 @@
-//! revs - Branch PR Preview TUI
+//! panko - Branch PR Preview TUI
 //!
 //! A TUI that previews your branch as a GitHub PR would show it,
 //! using merge-base diff to show only your changes.
@@ -23,7 +23,7 @@ use std::panic;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
-#[command(name = "revs")]
+#[command(name = "panko")]
 #[command(about = "Preview your branch as a GitHub PR")]
 #[command(version)]
 struct Args {
