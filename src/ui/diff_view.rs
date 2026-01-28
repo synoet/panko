@@ -754,9 +754,9 @@ fn render_comment_box(comment: &Comment, width: u16, focused: bool) -> Vec<Line<
     ]));
 
     let hints = if comment.resolved {
-        " R unresolve"
+        " R unresolve │ r reply │ D delete"
     } else {
-        " R resolve"
+        " R resolve │ r reply │ D delete"
     };
     let hints_pad = inner_w.saturating_sub(hints.len());
     lines.push(Line::from(vec![
@@ -1025,13 +1025,29 @@ pub fn render_unified(
             .map(|p| uncommitted_files.contains(p))
             .unwrap_or(false);
 
+        // Check if this line is within a comment range (for visual indication)
+        let is_in_comment_range = if show_comments {
+            let source_line = line.content.new_line_num().map(|n| n as usize);
+            let path = diff.files.get(line.file_index).map(|f| f.path.as_str());
+            match (path, source_line) {
+                (Some(p), Some(ln)) => comments.iter().any(|c| {
+                    c.file_path == p && ln >= c.start_line && ln <= c.end_line
+                }),
+                _ => false,
+            }
+        } else {
+            false
+        };
+
         // Prepend gutter (always present for consistent layout)
-        // Priority: cursor > uncommitted > visual selection > default
+        // Priority: cursor > uncommitted > visual selection > comment range > default
         let gutter_style = if is_cursor_line {
             Style::default().fg(styles::FG_CURSOR)
         } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::FG_WARNING)
         } else if is_selected {
+            Style::default().fg(styles::FG_HUNK)
+        } else if is_in_comment_range {
             Style::default().fg(styles::FG_HUNK)
         } else {
             Style::default().fg(styles::FG_BORDER)
@@ -1043,6 +1059,8 @@ pub fn render_unified(
             "▎ " // Orange bar for uncommitted
         } else if is_selected {
             "▌ " // Visual selection indicator
+        } else if is_in_comment_range {
+            "┃ " // Comment range indicator (blue bar)
         } else {
             "  " // Empty gutter
         };
@@ -1188,13 +1206,29 @@ pub fn render_split(
             .map(|p| uncommitted_files.contains(p))
             .unwrap_or(false);
 
+        // Check if this line is within a comment range (for visual indication)
+        let is_in_comment_range = if show_comments {
+            let source_line = line.content.new_line_num().map(|n| n as usize);
+            let path = diff.files.get(line.file_index).map(|f| f.path.as_str());
+            match (path, source_line) {
+                (Some(p), Some(ln)) => comments.iter().any(|c| {
+                    c.file_path == p && ln >= c.start_line && ln <= c.end_line
+                }),
+                _ => false,
+            }
+        } else {
+            false
+        };
+
         // Prepend gutter (always present for consistent layout)
-        // Priority: cursor > uncommitted > visual selection > default
+        // Priority: cursor > uncommitted > visual selection > comment range > default
         let gutter_style = if is_cursor_line {
             Style::default().fg(styles::FG_CURSOR)
         } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::FG_WARNING)
         } else if is_selected {
+            Style::default().fg(styles::FG_HUNK)
+        } else if is_in_comment_range {
             Style::default().fg(styles::FG_HUNK)
         } else {
             Style::default().fg(styles::FG_BORDER)
@@ -1206,6 +1240,8 @@ pub fn render_split(
             "▎ " // Orange bar for uncommitted
         } else if is_selected {
             "▌ " // Visual selection indicator
+        } else if is_in_comment_range {
+            "┃ " // Comment range indicator (blue bar)
         } else {
             "  " // Empty gutter
         };

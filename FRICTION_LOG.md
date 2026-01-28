@@ -1,0 +1,3 @@
+- I still find alot of scrolling jank when comments are turned on. I think they are offsetting the line calculations.
+- I can't see visually what lines the comment is referring to. It sayd the line numbers but there should be a visual indication
+- I have no way to reply to an existing comment thread.

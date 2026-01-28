@@ -467,7 +467,15 @@ impl App {
 
         let scroll_amount = 3; // Lines to scroll per mouse wheel tick
         let max_scroll = self.diff_lines.len().saturating_sub(1);
-        let vh = self.viewport_height.max(5);
+        let base_vh = self.viewport_height.max(5);
+
+        // Account for comment heights when comments are visible
+        let comment_lines = if self.show_comments {
+            self.estimate_comment_lines_in_range(self.scroll, self.scroll + base_vh)
+        } else {
+            0
+        };
+        let vh = base_vh.saturating_sub(comment_lines).max(3);
 
         match event {
             MouseEvent::ScrollUp => {
@@ -1134,8 +1142,19 @@ impl App {
     /// Ensure the cursor is visible in the viewport with scroll margin.
     fn ensure_cursor_visible(&mut self) {
         // Use stored viewport height (updated during render)
-        // Don't adjust for comments - that causes jumpy scrolling as comment count changes
-        let vh = self.viewport_height.max(5);
+        let base_vh = self.viewport_height.max(5);
+
+        // When comments are shown, we need to account for comment box heights
+        // between scroll and cursor. Comments take up rendered space that reduces
+        // how many diff lines actually fit in the viewport.
+        let comment_lines = if self.show_comments {
+            self.estimate_comment_lines_in_range(self.scroll, self.cursor)
+        } else {
+            0
+        };
+
+        // Effective viewport height is reduced by comment rendered lines
+        let vh = base_vh.saturating_sub(comment_lines).max(3);
 
         if self.cursor < self.scroll {
             // Cursor above viewport - scroll up to keep cursor visible
@@ -1144,6 +1163,40 @@ impl App {
             // Cursor below viewport - scroll down just enough to show cursor at bottom
             self.scroll = self.cursor + 1 - vh;
         }
+    }
+
+    /// Estimate the number of rendered lines that comments take up in a range of diff lines.
+    fn estimate_comment_lines_in_range(&self, start_idx: usize, end_idx: usize) -> usize {
+        if self.comments.is_empty() {
+            return 0;
+        }
+
+        let mut total_lines = 0;
+
+        // Iterate through diff lines in range to find comments that end there
+        for idx in start_idx..=end_idx {
+            if let Some(diff_line) = self.diff_lines.get(idx) {
+                let source_line = diff_line.content.new_line_num().map(|n| n as usize);
+                let file_path = self.diff.files.get(diff_line.file_index).map(|f| f.path.as_str());
+
+                if let (Some(path), Some(line_num)) = (file_path, source_line) {
+                    for comment in &self.comments {
+                        // Only count comments that END at this line (that's when they're rendered)
+                        if comment.file_path == path && comment.end_line == line_num {
+                            // Estimate comment box height:
+                            // 7 base lines (header, author, empty, body placeholder, empty, hints, border)
+                            // + ~1 line per 40 chars of body text (rough word wrap estimate)
+                            // + 3 lines per reply
+                            let body_lines = (comment.body.len() / 40).max(1);
+                            let reply_lines = comment.replies.len() * 3;
+                            total_lines += 7 + body_lines + reply_lines;
+                        }
+                    }
+                }
+            }
+        }
+
+        total_lines
     }
 
     fn sync_tree_selection(&mut self) {

@@ -190,6 +190,8 @@ impl GitRepo for Git2Repo {
         let mut opts = DiffOptions::new();
         opts.context_lines(3);
         opts.include_untracked(true);
+        opts.show_untracked_content(true);
+        opts.recurse_untracked_dirs(true);
 
         // Diff from HEAD tree to working directory (includes staged + unstaged)
         let diff = self
@@ -207,6 +209,8 @@ impl GitRepo for Git2Repo {
         let mut opts = DiffOptions::new();
         opts.context_lines(3);
         opts.include_untracked(true);
+        opts.show_untracked_content(true);
+        opts.recurse_untracked_dirs(true);
 
         // Diff from merge-base tree to working directory
         let diff = self
