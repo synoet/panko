@@ -1,6 +1,6 @@
-# diffium - Code Review Comments
+# revium - Code Review Comments
 
-Use this skill when the user asks you to work with code review comments in a `diffium` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
+Use this skill when the user asks you to work with code review comments in a `revium` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
 
 ## When to Use
 
@@ -13,66 +13,66 @@ Use this skill when the user asks you to work with code review comments in a `di
 
 ### List all comments
 ```bash
-diffium comments
+revium comments
 ```
 
 ### List only open (unresolved) comments
 ```bash
-diffium comments --status open
+revium comments --status open
 ```
 
 ### List resolved comments
 ```bash
-diffium comments --status resolved
+revium comments --status resolved
 ```
 
 ### Get JSON output (for parsing)
 ```bash
-diffium comments --format json
+revium comments --format json
 ```
 
 ### Resolve a comment by ID
 ```bash
-diffium resolve <comment_id>
+revium resolve <comment_id>
 ```
 
 ### Unresolve a comment (reopen)
 ```bash
-diffium unresolve <comment_id>
+revium unresolve <comment_id>
 ```
 
 ### Reply to a comment
 ```bash
-diffium reply <comment_id> --message "Your reply here"
-diffium reply <comment_id> --message "Your reply" --author "Claude"  # specify author
+revium reply <comment_id> --message "Your reply here"
+revium reply <comment_id> --message "Your reply" --author "Claude"  # specify author
 ```
 
 ### Add a new comment
 ```bash
-diffium comment <file_path> <start_line> <end_line> --message "Your comment"
-diffium comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
+revium comment <file_path> <start_line> <end_line> --message "Your comment"
+revium comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
 ```
 
 ### Delete a comment
 ```bash
-diffium delete <comment_id>
+revium delete <comment_id>
 ```
 
 ### Show a specific comment thread
 ```bash
-diffium show <comment_id>
-diffium show <comment_id> --format json
+revium show <comment_id>
+revium show <comment_id> --format json
 ```
 
 ## Workflow
 
 When the user asks you to address review comments:
 
-1. **List open comments**: `diffium comments --status open`
+1. **List open comments**: `revium comments --status open`
 2. **Read each comment** to understand what needs to be done
 3. **Make the code changes** to address each comment
-4. **Reply to the comment** explaining what you did: `diffium reply <id> --message "Fixed by..."`
-5. **Resolve the comment**: `diffium resolve <id>`
+4. **Reply to the comment** explaining what you did: `revium reply <id> --message "Fixed by..."`
+5. **Resolve the comment**: `revium resolve <id>`
 6. **Verify** by listing open comments again
 
 ## Output Format
@@ -121,7 +121,7 @@ When the user asks you to address review comments:
 User: Check if there are any review comments I need to address
 
 AI: Let me check for open review comments.
-[runs: diffium comments --status open]
+[runs: revium comments --status open]
 
 Found 2 open comments:
 
@@ -136,20 +136,20 @@ AI: I'll address each comment:
 
 **Comment #3 - Rate limiting**
 [makes changes to src/auth.rs]
-[runs: diffium reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
-[runs: diffium resolve 3]
+[runs: revium reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
+[runs: revium resolve 3]
 
 **Comment #5 - SQL injection**
 [makes changes to src/api/users.rs]
-[runs: diffium reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
-[runs: diffium resolve 5]
+[runs: revium reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
+[runs: revium resolve 5]
 
 Done! Both comments have been addressed and resolved.
 ```
 
 ## Notes
 
-- Comments are stored locally in SQLite at `~/.config/diffium/state.db` (macOS: `~/Library/Application Support/diffium/`)
+- Comments are stored locally in SQLite at `~/.config/revium/state.db` (macOS: `~/Library/Application Support/revium/`)
 - Comments are scoped to repo + branch, so switching branches shows different comments
 - Line numbers refer to actual source file lines (in the new/right side of the diff)
 - The `--author` flag lets agents identify themselves (defaults to git user name)
