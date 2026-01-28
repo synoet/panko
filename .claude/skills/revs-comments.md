@@ -1,6 +1,6 @@
-# revium - Code Review Comments
+# revs - Code Review Comments
 
-Use this skill when the user asks you to work with code review comments in a `revium` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
+Use this skill when the user asks you to work with code review comments in a `revs` PR preview session. This skill allows you to list, resolve, and reply to comments that reviewers (human or AI) have left on the branch.
 
 ## When to Use
 
@@ -13,66 +13,66 @@ Use this skill when the user asks you to work with code review comments in a `re
 
 ### List all comments
 ```bash
-revium comments
+revs comments
 ```
 
 ### List only open (unresolved) comments
 ```bash
-revium comments --status open
+revs comments --status open
 ```
 
 ### List resolved comments
 ```bash
-revium comments --status resolved
+revs comments --status resolved
 ```
 
 ### Get JSON output (for parsing)
 ```bash
-revium comments --format json
+revs comments --format json
 ```
 
 ### Resolve a comment by ID
 ```bash
-revium resolve <comment_id>
+revs resolve <comment_id>
 ```
 
 ### Unresolve a comment (reopen)
 ```bash
-revium unresolve <comment_id>
+revs unresolve <comment_id>
 ```
 
 ### Reply to a comment
 ```bash
-revium reply <comment_id> --message "Your reply here"
-revium reply <comment_id> --message "Your reply" --author "Claude"  # specify author
+revs reply <comment_id> --message "Your reply here"
+revs reply <comment_id> --message "Your reply" --author "Claude"  # specify author
 ```
 
 ### Add a new comment
 ```bash
-revium comment <file_path> <start_line> <end_line> --message "Your comment"
-revium comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
+revs comment <file_path> <start_line> <end_line> --message "Your comment"
+revs comment src/app.rs 100 105 --message "Consider error handling here" --author "Claude"
 ```
 
 ### Delete a comment
 ```bash
-revium delete <comment_id>
+revs delete <comment_id>
 ```
 
 ### Show a specific comment thread
 ```bash
-revium show <comment_id>
-revium show <comment_id> --format json
+revs show <comment_id>
+revs show <comment_id> --format json
 ```
 
 ## Workflow
 
 When the user asks you to address review comments:
 
-1. **List open comments**: `revium comments --status open`
+1. **List open comments**: `revs comments --status open`
 2. **Read each comment** to understand what needs to be done
 3. **Make the code changes** to address each comment
-4. **Reply to the comment** explaining what you did: `revium reply <id> --message "Fixed by..."`
-5. **Resolve the comment**: `revium resolve <id>`
+4. **Reply to the comment** explaining what you did: `revs reply <id> --message "Fixed by..."`
+5. **Resolve the comment**: `revs resolve <id>`
 6. **Verify** by listing open comments again
 
 ## Output Format
@@ -121,7 +121,7 @@ When the user asks you to address review comments:
 User: Check if there are any review comments I need to address
 
 AI: Let me check for open review comments.
-[runs: revium comments --status open]
+[runs: revs comments --status open]
 
 Found 2 open comments:
 
@@ -136,20 +136,20 @@ AI: I'll address each comment:
 
 **Comment #3 - Rate limiting**
 [makes changes to src/auth.rs]
-[runs: revium reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
-[runs: revium resolve 3]
+[runs: revs reply 3 --message "Added rate limiting using a token bucket algorithm with 5 attempts per minute"]
+[runs: revs resolve 3]
 
 **Comment #5 - SQL injection**
 [makes changes to src/api/users.rs]
-[runs: revium reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
-[runs: revium resolve 5]
+[runs: revs reply 5 --message "Fixed by using parameterized queries instead of string interpolation"]
+[runs: revs resolve 5]
 
 Done! Both comments have been addressed and resolved.
 ```
 
 ## Notes
 
-- Comments are stored locally in SQLite at `~/.config/revium/state.db` (macOS: `~/Library/Application Support/revium/`)
+- Comments are stored locally in SQLite at `~/.config/revs/state.db` (macOS: `~/Library/Application Support/revs/`)
 - Comments are scoped to repo + branch, so switching branches shows different comments
 - Line numbers refer to actual source file lines (in the new/right side of the diff)
 - The `--author` flag lets agents identify themselves (defaults to git user name)
