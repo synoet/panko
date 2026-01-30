@@ -1,36 +1,124 @@
-//! Syntax highlighting using syntect with Monokai theme (high contrast).
+//! Syntax highlighting using two-face with GitHub Dark theme.
 
 #![allow(dead_code)]
+
+use std::str::FromStr;
 
 use once_cell::sync::Lazy;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, ThemeSet};
+use syntect::highlighting::{
+    Color as SynColor, FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
+};
 use syntect::parsing::SyntaxSet;
 
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
-static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(two_face::syntax::extra_newlines);
+static THEME: Lazy<Theme> = Lazy::new(github_dark_theme);
+
+/// GitHub Dark Classic theme colors
+fn github_dark_theme() -> Theme {
+    let fg = SynColor { r: 225, g: 228, b: 232, a: 255 };       // #e1e4e8
+    let comment = SynColor { r: 106, g: 115, b: 125, a: 255 };  // #6a737d
+    let keyword = SynColor { r: 249, g: 117, b: 131, a: 255 };  // #f97583
+    let string = SynColor { r: 158, g: 203, b: 255, a: 255 };   // #9ecbff
+    let constant = SynColor { r: 121, g: 184, b: 255, a: 255 }; // #79b8ff
+    let entity = SynColor { r: 179, g: 146, b: 240, a: 255 };   // #b392f0
+    let tag = SynColor { r: 133, g: 232, b: 157, a: 255 };      // #85e89d
+    let variable = SynColor { r: 255, g: 171, b: 112, a: 255 }; // #ffab70
+
+    Theme {
+        name: Some("GitHub Dark".into()),
+        author: Some("GitHub".into()),
+        settings: ThemeSettings {
+            foreground: Some(fg),
+            background: Some(SynColor { r: 36, g: 41, b: 46, a: 255 }), // #24292e
+            ..Default::default()
+        },
+        scopes: vec![
+            // Comments
+            theme_item("comment", comment, false, true),
+            theme_item("punctuation.definition.comment", comment, false, true),
+            // Keywords (if, else, return, etc.)
+            theme_item("keyword", keyword, false, false),
+            theme_item("keyword.control", keyword, false, false),
+            theme_item("keyword.operator", keyword, false, false),
+            // Storage (let, const, fn, var, function, class, etc.)
+            theme_item("storage", keyword, false, false),
+            theme_item("storage.type", keyword, false, false),
+            theme_item("storage.modifier", keyword, false, false),
+            // Strings
+            theme_item("string", string, false, false),
+            theme_item("punctuation.definition.string", string, false, false),
+            // Constants and numbers
+            theme_item("constant", constant, false, false),
+            theme_item("constant.numeric", constant, false, false),
+            theme_item("constant.language", constant, false, false),
+            theme_item("variable.other.constant", constant, false, false),
+            // Functions and methods
+            theme_item("entity.name.function", entity, false, false),
+            theme_item("entity.name.method", entity, false, false),
+            theme_item("support.function", entity, false, false),
+            theme_item("meta.function-call", entity, false, false),
+            // Types and classes
+            theme_item("entity.name.type", entity, false, false),
+            theme_item("entity.name.class", entity, false, false),
+            theme_item("support.type", constant, false, false),
+            theme_item("support.class", constant, false, false),
+            // Tags (HTML/JSX)
+            theme_item("entity.name.tag", tag, false, false),
+            // Variables
+            theme_item("variable", variable, false, false),
+            theme_item("variable.parameter", fg, false, false),
+            theme_item("variable.other", fg, false, false),
+            // Properties
+            theme_item("meta.property-name", constant, false, false),
+            theme_item("support.variable.property", constant, false, false),
+            // Punctuation (keep it subtle)
+            theme_item("punctuation", fg, false, false),
+            // Operators
+            theme_item("keyword.operator", fg, false, false),
+        ],
+        ..Default::default()
+    }
+}
+
+fn theme_item(scope: &str, color: SynColor, bold: bool, italic: bool) -> ThemeItem {
+    let mut font_style = FontStyle::empty();
+    if bold {
+        font_style |= FontStyle::BOLD;
+    }
+    if italic {
+        font_style |= FontStyle::ITALIC;
+    }
+    ThemeItem {
+        scope: ScopeSelectors::from_str(scope).unwrap_or_default(),
+        style: StyleModifier {
+            foreground: Some(color),
+            font_style: Some(font_style),
+            ..Default::default()
+        },
+    }
+}
 
 /// Get syntax-highlighted spans for a line of code.
-/// Uses InspiredGitHub theme for high contrast on dark backgrounds.
 pub fn highlight_line(content: &str, extension: &str) -> Vec<Span<'static>> {
     let syntax = SYNTAX_SET
         .find_syntax_by_extension(extension)
         .or_else(|| SYNTAX_SET.find_syntax_by_extension("txt"))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
 
-    // Use InspiredGitHub for better contrast (it has bright colors that work well on dark bg)
-    let theme = &THEME_SET.themes["InspiredGitHub"];
-    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut highlighter = HighlightLines::new(syntax, &THEME);
 
     match highlighter.highlight_line(content, &SYNTAX_SET) {
         Ok(ranges) => ranges
             .into_iter()
             .map(|(style, text)| {
-                // Boost brightness for dark background compatibility
-                let (r, g, b) = boost_for_dark_bg(style.foreground.r, style.foreground.g, style.foreground.b);
-                let fg = Color::Rgb(r, g, b);
+                let fg = Color::Rgb(
+                    style.foreground.r,
+                    style.foreground.g,
+                    style.foreground.b,
+                );
                 let mut ratatui_style = Style::default().fg(fg);
 
                 if style.font_style.contains(FontStyle::BOLD) {
@@ -47,68 +135,7 @@ pub fn highlight_line(content: &str, extension: &str) -> Vec<Span<'static>> {
     }
 }
 
-/// Boost color brightness for visibility on dark backgrounds.
-/// Maps light-theme colors to GitHub dark mode equivalents.
-fn boost_for_dark_bg(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    // Calculate perceived luminance
-    let lum = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-
-    // If color is too dark for dark bg, brighten it while preserving hue
-    if lum < 100.0 {
-        // Map dark colors to GitHub dark mode palette
-        // Dark blue -> bright blue
-        if b > r && b > g {
-            return (121, 192, 255); // #79c0ff - GitHub blue
-        }
-        // Dark green -> bright green
-        if g > r && g > b {
-            return (63, 185, 80); // #3fb950 - GitHub green
-        }
-        // Dark red/magenta -> coral
-        if r > g {
-            return (255, 123, 114); // #ff7b72 - GitHub red/coral
-        }
-        // Default: brighten to light gray
-        return (230, 237, 243); // #e6edf3 - GitHub default text
-    }
-
-    // For already bright colors, tweak to GitHub palette
-    // Bright blue
-    if b > 200 && r < 150 && g < 200 {
-        return (165, 214, 255); // #a5d6ff - light blue (strings)
-    }
-    // Purple/magenta
-    if r > 150 && b > 150 && g < 150 {
-        return (210, 168, 255); // #d2a8ff - purple (functions)
-    }
-    // Orange/yellow
-    if r > 200 && g > 100 && b < 150 {
-        return (255, 166, 87); // #ffa657 - orange (types)
-    }
-    // Green
-    if g > 150 && r < 150 && b < 150 {
-        return (126, 231, 135); // #7ee787 - bright green
-    }
-
-    // Keep as-is if already good contrast
-    (r, g, b)
-}
-
-/// Extract file extension from path, with mappings for unsupported types.
+/// Extract file extension from path.
 pub fn get_extension(path: &str) -> &str {
-    let ext = path.rsplit('.').next().unwrap_or("txt");
-
-    // Map TypeScript and other extensions to supported syntaxes
-    match ext {
-        "ts" => "js",
-        "tsx" => "jsx",
-        "mts" => "js",
-        "cts" => "js",
-        "mjs" => "js",
-        "cjs" => "js",
-        "svelte" => "html",
-        "vue" => "html",
-        "astro" => "html",
-        _ => ext,
-    }
+    path.rsplit('.').next().unwrap_or("txt")
 }

@@ -1,3 +1,3 @@
-- I still find alot of scrolling jank when comments are turned on. I think they are offsetting the line calculations.
-- I can't see visually what lines the comment is referring to. It sayd the line numbers but there should be a visual indication
-- I have no way to reply to an existing comment thread.
+- I have no way to reply to an existing comment thread. (i hit r but i don't see an input or anything)
+- We should auto collapse file blocks that are marked as viewed. Unless they have new changes since the last time they were marked as viewed. In that case
+show it as expanded, and put a marker at the top of the file block that says "new changes since last view".
