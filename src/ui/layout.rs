@@ -2,6 +2,7 @@
 
 use crate::app::{DiffSource, Focus, ViewMode};
 use crate::domain::{Comment, Diff};
+use crate::keymap::Keymap;
 use crate::ui::{diff_view, file_tree, styles};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -42,6 +43,7 @@ pub fn render_main(
     visual_selection: Option<(usize, usize)>,
     focused_comment: Option<i64>,
     draft_comment: Option<&(String, usize, usize, String)>, // (file_path, start, end, body)
+    reply_info: Option<(i64, &str)>, // (comment_id, input_text) for reply input
     focus: Focus,
     mode: ViewMode,
 ) {
@@ -88,6 +90,7 @@ pub fn render_main(
                     visual_selection,
                     focused_comment,
                     draft_comment,
+                    reply_info,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -109,6 +112,7 @@ pub fn render_main(
                     visual_selection,
                     focused_comment,
                     draft_comment,
+                    reply_info,
                 );
             }
         }
@@ -163,6 +167,7 @@ pub fn render_main(
                     visual_selection,
                     focused_comment,
                     draft_comment,
+                    reply_info,
                 );
             }
             diff_view::DiffViewMode::Split => {
@@ -184,6 +189,7 @@ pub fn render_main(
                     visual_selection,
                     focused_comment,
                     draft_comment,
+                    reply_info,
                 );
             }
         }
@@ -478,13 +484,13 @@ fn render_global_header(
     frame.render_widget(header, area);
 }
 
-/// Render help overlay.
-pub fn render_help(frame: &mut Frame, area: Rect) {
+/// Render help overlay using keymap data.
+pub fn render_help(frame: &mut Frame, area: Rect, keymap: &Keymap) {
     let popup_area = centered_rect(55, 70, area);
 
     frame.render_widget(Clear, popup_area);
 
-    let help_text = vec![
+    let mut help_text = vec![
         Line::from(""),
         Line::from(Span::styled(
             "  Keyboard Shortcuts",
@@ -493,95 +499,42 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled("  Navigation", styles::style_muted())),
-        Line::from(vec![
-            Span::styled("  j/↓       ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Move down"),
-        ]),
-        Line::from(vec![
-            Span::styled("  k/↑       ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Move up"),
-        ]),
-        Line::from(vec![
-            Span::styled("  g/G       ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Go to top/bottom"),
-        ]),
-        Line::from(vec![
-            Span::styled("  n/p       ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Next/previous file"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Actions", styles::style_muted())),
-        Line::from(vec![
-            Span::styled("  Enter     ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Select file / toggle directory"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Tab       ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Switch pane focus"),
-        ]),
-        Line::from(vec![
-            Span::styled("  /         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Focus filter input"),
-        ]),
-        Line::from(vec![
-            Span::styled("  x         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Mark file as viewed"),
-        ]),
-        Line::from(vec![
-            Span::styled("  c         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Collapse/expand file"),
-        ]),
-        Line::from(vec![
-            Span::styled("  s         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Toggle split/unified view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  b         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Toggle sidebar"),
-        ]),
-        Line::from(vec![
-            Span::styled("  r         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Refresh (reload git changes)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  u         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Cycle diff source (committed/uncommitted/all)"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Comments", styles::style_muted())),
-        Line::from(vec![
-            Span::styled("  V         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Enter visual mode (select lines)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  c (visual)", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Add comment on selection"),
-        ]),
-        Line::from(vec![
-            Span::styled("  R         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Toggle comment resolved"),
-        ]),
-        Line::from(vec![
-            Span::styled("  C         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Show/hide comments"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  General", styles::style_muted())),
-        Line::from(vec![
-            Span::styled("  ?         ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Toggle help"),
-        ]),
-        Line::from(vec![
-            Span::styled("  q/Esc     ", Style::default().fg(styles::FG_ADDITION)),
-            Span::raw("Quit / close"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Press any key to close",
-            styles::style_muted(),
-        )),
     ];
+
+    // Generate help from keymap
+    for (category, entries) in keymap.help_entries() {
+        help_text.push(Line::from(Span::styled(
+            format!("  {}", category.display_name()),
+            styles::style_muted(),
+        )));
+
+        for entry in entries {
+            let key_col = if let Some(hint) = entry.context_hint {
+                if hint.is_empty() {
+                    format!("  {:<10}", entry.key_display)
+                } else {
+                    format!("  {} ({})", entry.key_display, hint)
+                }
+            } else {
+                format!("  {:<10}", entry.key_display)
+            };
+
+            // Pad to fixed width for alignment
+            let key_col = format!("{:<14}", key_col);
+
+            help_text.push(Line::from(vec![
+                Span::styled(key_col, Style::default().fg(styles::FG_ADDITION)),
+                Span::raw(entry.description),
+            ]));
+        }
+
+        help_text.push(Line::from(""));
+    }
+
+    help_text.push(Line::from(Span::styled(
+        "  Press any key to close",
+        styles::style_muted(),
+    )));
 
     let help = Paragraph::new(help_text).block(
         Block::default()

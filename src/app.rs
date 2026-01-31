@@ -1,6 +1,7 @@
 //! Application state machine.
 
 use crate::domain::{BranchPreview, Comment, Diff, Reply};
+use crate::keymap::{Action, Context, Keymap, build_default_keymap};
 use crate::ports::{
     FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, NewReply, StateStore,
     Terminal, TerminalEvent,
@@ -103,6 +104,8 @@ pub struct App {
     pub reply_to_comment_id: Option<i64>,
     /// Last known viewport height (updated during render)
     pub viewport_height: usize,
+    /// Keymap for handling key bindings with context-based dispatch
+    keymap: Keymap,
 }
 
 impl App {
@@ -125,12 +128,24 @@ impl App {
         // Build UI data structures
         let tree_nodes = file_tree::build_tree(&diff);
         let flat_items = file_tree::flatten_tree(&tree_nodes, "");
-        let collapsed_files = HashSet::new();
-        let diff_lines = diff_view::build_unified_lines(&diff, &collapsed_files);
 
         // Load viewed files from state store
         let (viewed_files, viewed_timestamps) =
             Self::load_viewed_state(&state_store, &repo_path, &current_branch, &diff);
+
+        // All viewed files from previous sessions are considered "stale" (may have changes)
+        // For now, we don't have actual change detection, so all are stale
+        let stale_viewed_files: HashSet<usize> = viewed_files.clone();
+
+        // Auto-collapse viewed files on startup, but NOT stale ones (keep them expanded)
+        // Since all viewed files are currently marked stale, we leave them expanded
+        // When proper staleness detection is added, non-stale viewed files will collapse
+        let collapsed_files: HashSet<usize> = viewed_files
+            .iter()
+            .filter(|idx| !stale_viewed_files.contains(idx))
+            .copied()
+            .collect();
+        let diff_lines = diff_view::build_unified_lines(&diff, &collapsed_files);
 
         Ok(Self {
             preview: BranchPreview {
@@ -151,7 +166,7 @@ impl App {
             scroll: 0,
             cursor: 0,
             collapsed_files,
-            stale_viewed_files: viewed_files.clone(), // Files from previous session are stale
+            stale_viewed_files,
             viewed_files,
             filter: String::new(),
             should_quit: false,
@@ -174,6 +189,7 @@ impl App {
             focused_comment: None,
             reply_to_comment_id: None,
             viewport_height: 30, // Default, updated during render
+            keymap: build_default_keymap(),
         })
     }
 
@@ -394,8 +410,8 @@ impl App {
         let focused_comment = self.focused_comment;
         let focus = self.focus;
 
-        // Build draft comment for inline rendering during comment input mode
-        let draft_comment = if mode == ViewMode::CommentInput {
+        // Build draft comment for inline rendering during comment input mode (new comments only)
+        let draft_comment = if mode == ViewMode::CommentInput && self.reply_to_comment_id.is_none() {
             visual_selection.map(|(start, end)| {
                 let file_path = self.comment_file_path.clone().unwrap_or_default();
                 (file_path, start, end, self.comment_input.clone())
@@ -404,8 +420,19 @@ impl App {
             None
         };
 
+        // Build reply info for inline rendering during reply input mode
+        let reply_to_id = self.reply_to_comment_id;
+        let reply_input = self.comment_input.clone();
+
         terminal.draw(|frame| {
             let area = frame.area();
+
+            // Build reply_info inside the closure where we need it
+            let reply_info = if mode == ViewMode::CommentInput && reply_to_id.is_some() {
+                reply_to_id.map(|id| (id, reply_input.as_str()))
+            } else {
+                None
+            };
 
             if diff.files.is_empty() {
                 layout::render_empty(frame, area, "No changes found", branch, base);
@@ -438,6 +465,7 @@ impl App {
                     visual_selection,
                     focused_comment,
                     draft_comment.as_ref(),
+                    reply_info,
                     focus,
                     mode,
                 );
@@ -445,7 +473,7 @@ impl App {
 
             // Render overlays
             if mode == ViewMode::Help {
-                layout::render_help(frame, area);
+                layout::render_help(frame, area, &self.keymap);
             }
             // Note: Visual mode and CommentInput are shown in the status bar
         })
@@ -496,127 +524,350 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, git: &dyn GitRepo) -> Result<()> {
-        // Handle comment input mode first
-        if self.mode == ViewMode::CommentInput {
-            return self.handle_comment_input_key(code);
-        }
+    /// Build the current context stack based on app state.
+    /// More specific contexts are later in the vec (higher precedence).
+    fn build_contexts(&self) -> Vec<Context> {
+        let mut contexts = vec![Context::Global];
 
-        // Handle visual mode
-        if self.mode == ViewMode::Visual {
-            return self.handle_visual_mode_key(code);
-        }
-
-        // Handle filter input mode
-        if self.focus == Focus::FilterInput {
-            return self.handle_filter_key(code);
-        }
-
-        // Global keys
-        if code == KeyCode::Char('q') && !modifiers.ctrl {
-            self.should_quit = true;
-            return Ok(());
-        }
-
-        if code == KeyCode::Char('c') && modifiers.ctrl {
-            self.should_quit = true;
-            return Ok(());
-        }
-
-        // Help mode
-        if self.mode == ViewMode::Help {
-            self.mode = ViewMode::Normal;
-            return Ok(());
-        }
-
-        if code == KeyCode::Char('?') {
-            self.mode = ViewMode::Help;
-            return Ok(());
-        }
-
-        // 'r' to refresh
-        if code == KeyCode::Char('r') {
-            self.refresh(git)?;
-            return Ok(());
-        }
-
-        // 'u' to cycle diff source (Committed -> Uncommitted -> All -> Committed)
-        if code == KeyCode::Char('u') {
-            self.diff_source = match self.diff_source {
-                DiffSource::Committed => DiffSource::Uncommitted,
-                DiffSource::Uncommitted => DiffSource::All,
-                DiffSource::All => DiffSource::Committed,
-            };
-            self.reload_diff(git)?;
-            return Ok(());
-        }
-
-        // 'C' to toggle show/hide comments
-        if code == KeyCode::Char('C') {
-            self.show_comments = !self.show_comments;
-            return Ok(());
-        }
-
-        // Tab to switch focus
-        if code == KeyCode::Tab {
-            self.focus = match self.focus {
-                Focus::FileTree => Focus::DiffView,
-                Focus::DiffView => Focus::FileTree,
-                Focus::FilterInput => Focus::FileTree,
-            };
-            return Ok(());
-        }
-
-        // '/' to focus filter
-        if code == KeyCode::Char('/') {
-            self.focus = Focus::FilterInput;
-            return Ok(());
-        }
-
-        // 's' to toggle split view
-        if code == KeyCode::Char('s') {
-            self.diff_view_mode = match self.diff_view_mode {
-                diff_view::DiffViewMode::Unified => diff_view::DiffViewMode::Split,
-                diff_view::DiffViewMode::Split => diff_view::DiffViewMode::Unified,
-            };
-            self.rebuild_diff_lines();
-            return Ok(());
-        }
-
-        // 'b' to toggle sidebar
-        if code == KeyCode::Char('b') {
-            self.sidebar_collapsed = !self.sidebar_collapsed;
-            return Ok(());
-        }
-
-        // 'V' to enter visual mode (only in diff view)
-        if code == KeyCode::Char('v') && self.focus == Focus::DiffView {
-            self.enter_visual_mode();
-            return Ok(());
-        }
-
+        // Add focus-based context
         match self.focus {
-            Focus::FileTree => self.handle_tree_key(code),
-            Focus::DiffView => self.handle_diff_key(code),
-            Focus::FilterInput => Ok(()), // Handled above
+            Focus::FileTree => contexts.push(Context::FileTree),
+            Focus::DiffView => contexts.push(Context::DiffView),
+            Focus::FilterInput => contexts.push(Context::FilterInput),
         }
+
+        // Add mode-based contexts (more specific than focus)
+        match self.mode {
+            ViewMode::Help => contexts.push(Context::Help),
+            ViewMode::Visual => contexts.push(Context::Visual),
+            ViewMode::CommentInput => contexts.push(Context::CommentInput),
+            ViewMode::Normal => {}
+        }
+
+        // Add comment-focused context if applicable
+        if self.focused_comment.is_some() {
+            contexts.push(Context::CommentFocused);
+        }
+
+        contexts
     }
 
-    fn handle_filter_key(&mut self, code: KeyCode) -> Result<()> {
-        match code {
-            KeyCode::Esc | KeyCode::Enter => {
-                self.focus = Focus::FileTree;
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, git: &dyn GitRepo) -> Result<()> {
+        // Handle character input specially for text input modes
+        if let KeyCode::Char(c) = code {
+            if !modifiers.ctrl {
+                match self.mode {
+                    ViewMode::CommentInput => {
+                        self.comment_input.push(c);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+                if self.focus == Focus::FilterInput {
+                    self.filter.push(c);
+                    self.rebuild_flat_items();
+                    return Ok(());
+                }
             }
-            KeyCode::Char(c) => {
-                self.filter.push(c);
-                self.rebuild_flat_items();
+        }
+
+        // Look up action from keymap
+        let contexts = self.build_contexts();
+        let action = self.keymap.lookup(code, modifiers, &contexts);
+
+        if let Some(action) = action {
+            self.dispatch_action(action, git)?;
+        }
+
+        Ok(())
+    }
+
+    /// Execute an action.
+    fn dispatch_action(&mut self, action: Action, git: &dyn GitRepo) -> Result<()> {
+        let max_line = self.diff_lines.len().saturating_sub(1);
+        let file_count = self.diff.files.len();
+
+        match action {
+            // === Navigation ===
+            Action::MoveDown => {
+                match self.focus {
+                    Focus::FileTree => {
+                        let max_item = self.flat_items.len().saturating_sub(1);
+                        if self.selected_tree_item < max_item {
+                            self.selected_tree_item += 1;
+                        }
+                    }
+                    Focus::DiffView => self.move_cursor_down(max_line),
+                    _ => {}
+                }
             }
-            KeyCode::Backspace => {
+            Action::MoveUp => {
+                match self.focus {
+                    Focus::FileTree => {
+                        self.selected_tree_item = self.selected_tree_item.saturating_sub(1);
+                    }
+                    Focus::DiffView => self.move_cursor_up(),
+                    _ => {}
+                }
+            }
+            Action::HalfPageDown => {
+                self.focused_comment = None;
+                self.cursor = (self.cursor + self.viewport_height / 2).min(max_line);
+                self.sync_from_cursor();
+            }
+            Action::HalfPageUp => {
+                self.focused_comment = None;
+                self.cursor = self.cursor.saturating_sub(self.viewport_height / 2);
+                self.sync_from_cursor();
+            }
+            Action::PageDown => {
+                self.focused_comment = None;
+                self.cursor = (self.cursor + 20).min(max_line);
+                self.sync_from_cursor();
+            }
+            Action::PageUp => {
+                self.focused_comment = None;
+                self.cursor = self.cursor.saturating_sub(20);
+                self.sync_from_cursor();
+            }
+            Action::GotoTop => {
+                match self.focus {
+                    Focus::FileTree => self.selected_tree_item = 0,
+                    Focus::DiffView => {
+                        self.focused_comment = None;
+                        self.cursor = 0;
+                        self.scroll = 0;
+                        self.sync_from_cursor();
+                    }
+                    _ => {}
+                }
+            }
+            Action::GotoBottom => {
+                match self.focus {
+                    Focus::FileTree => {
+                        self.selected_tree_item = self.flat_items.len().saturating_sub(1);
+                    }
+                    Focus::DiffView => {
+                        self.focused_comment = None;
+                        self.cursor = max_line;
+                        self.scroll = max_line.saturating_sub(20);
+                        self.sync_from_cursor();
+                    }
+                    _ => {}
+                }
+            }
+            Action::NextFile => {
+                self.focused_comment = None;
+                if self.current_file_index < file_count.saturating_sub(1) {
+                    self.current_file_index += 1;
+                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.cursor = file_start;
+                    self.scroll = file_start;
+                    self.sync_tree_selection();
+                }
+            }
+            Action::PrevFile => {
+                self.focused_comment = None;
+                if self.current_file_index > 0 {
+                    self.current_file_index -= 1;
+                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
+                    self.cursor = file_start;
+                    self.scroll = file_start;
+                    self.sync_tree_selection();
+                }
+            }
+
+            // === Focus ===
+            Action::SwitchPane => {
+                self.focus = match self.focus {
+                    Focus::FileTree => Focus::DiffView,
+                    Focus::DiffView => Focus::FileTree,
+                    Focus::FilterInput => Focus::FileTree,
+                };
+            }
+            Action::FocusFilter => {
+                self.focus = Focus::FilterInput;
+            }
+
+            // === View toggles ===
+            Action::ToggleSplitView => {
+                self.diff_view_mode = match self.diff_view_mode {
+                    diff_view::DiffViewMode::Unified => diff_view::DiffViewMode::Split,
+                    diff_view::DiffViewMode::Split => diff_view::DiffViewMode::Unified,
+                };
+                self.rebuild_diff_lines();
+            }
+            Action::ToggleSidebar => {
+                self.sidebar_collapsed = !self.sidebar_collapsed;
+            }
+            Action::ToggleComments => {
+                self.show_comments = !self.show_comments;
+            }
+            Action::CycleDiffSource => {
+                self.diff_source = match self.diff_source {
+                    DiffSource::Committed => DiffSource::Uncommitted,
+                    DiffSource::Uncommitted => DiffSource::All,
+                    DiffSource::All => DiffSource::Committed,
+                };
+                self.reload_diff(git)?;
+            }
+
+            // === File actions ===
+            Action::ToggleCollapse => {
+                match self.focus {
+                    Focus::FileTree => {
+                        if let Some(item) = self.flat_items.get(self.selected_tree_item) {
+                            if item.is_directory {
+                                file_tree::toggle_directory(&mut self.tree_nodes, &item.tree_path);
+                                self.rebuild_flat_items();
+                            } else if let Some(file_idx) = item.file_index {
+                                if self.collapsed_files.contains(&file_idx) {
+                                    self.collapsed_files.remove(&file_idx);
+                                } else {
+                                    self.collapsed_files.insert(file_idx);
+                                }
+                                self.rebuild_diff_lines();
+                            }
+                        }
+                    }
+                    Focus::DiffView => {
+                        // Check if on file header
+                        if let Some(line) = self.diff_lines.get(self.cursor) {
+                            let file_idx = if line.kind == diff_view::LineKind::FileHeader {
+                                line.file_index
+                            } else {
+                                self.current_file_index
+                            };
+                            if self.collapsed_files.contains(&file_idx) {
+                                self.collapsed_files.remove(&file_idx);
+                            } else {
+                                self.collapsed_files.insert(file_idx);
+                            }
+                            self.rebuild_diff_lines();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Action::ToggleViewed => {
+                match self.focus {
+                    Focus::FileTree => {
+                        if let Some(item) = self.flat_items.get(self.selected_tree_item) {
+                            if let Some(file_idx) = item.file_index {
+                                self.toggle_viewed(file_idx);
+                            }
+                        }
+                    }
+                    Focus::DiffView => {
+                        self.toggle_viewed(self.current_file_index);
+                    }
+                    _ => {}
+                }
+            }
+            Action::SelectFile => {
+                if let Some(item) = self.flat_items.get(self.selected_tree_item) {
+                    if item.is_directory {
+                        file_tree::toggle_directory(&mut self.tree_nodes, &item.tree_path);
+                        self.rebuild_flat_items();
+                    } else if let Some(file_idx) = item.file_index {
+                        self.current_file_index = file_idx;
+                        self.scroll = diff_view::find_file_start(&self.diff_lines, file_idx);
+                        self.focus = Focus::DiffView;
+                    }
+                }
+            }
+
+            // === Comment actions ===
+            Action::EnterVisualMode => {
+                self.enter_visual_mode();
+            }
+            Action::ExitVisualMode => {
+                self.exit_visual_mode();
+            }
+            Action::StartComment => {
+                self.mode = ViewMode::CommentInput;
+                self.comment_input.clear();
+            }
+            Action::ReplyToComment => {
+                if let Some(comment_id) = self.focused_comment {
+                    self.start_reply(comment_id);
+                }
+            }
+            Action::ToggleResolved => {
+                if let Some(comment_id) = self.focused_comment {
+                    self.toggle_comment_resolved_by_id(comment_id);
+                } else {
+                    self.toggle_comment_resolved();
+                }
+            }
+            Action::DeleteComment => {
+                if let Some(comment_id) = self.focused_comment {
+                    self.delete_comment(comment_id);
+                }
+            }
+
+            // === Input handling ===
+            Action::SubmitInput => {
+                match self.mode {
+                    ViewMode::CommentInput => {
+                        if !self.comment_input.trim().is_empty() {
+                            if self.reply_to_comment_id.is_some() {
+                                self.submit_reply();
+                            } else {
+                                self.submit_comment();
+                            }
+                        }
+                        self.mode = ViewMode::Normal;
+                        self.exit_visual_mode();
+                        self.comment_input.clear();
+                        self.reply_to_comment_id = None;
+                    }
+                    _ => {
+                        // Filter input submit
+                        self.focus = Focus::FileTree;
+                    }
+                }
+            }
+            Action::CancelInput => {
+                match self.mode {
+                    ViewMode::CommentInput => {
+                        self.mode = ViewMode::Normal;
+                        self.comment_input.clear();
+                        self.reply_to_comment_id = None;
+                        self.exit_visual_mode();
+                    }
+                    _ => {
+                        // Filter input cancel
+                        self.focus = Focus::FileTree;
+                    }
+                }
+            }
+            Action::InputBackspace => {
+                self.comment_input.pop();
+            }
+            Action::FilterBackspace => {
                 self.filter.pop();
                 self.rebuild_flat_items();
             }
-            _ => {}
+
+            // === General ===
+            Action::Refresh => {
+                self.refresh(git)?;
+            }
+            Action::ShowHelp => {
+                self.mode = ViewMode::Help;
+            }
+            Action::DismissHelp => {
+                self.mode = ViewMode::Normal;
+            }
+            Action::Quit => {
+                self.should_quit = true;
+            }
+
+            // These are handled specially in handle_key
+            Action::FilterAddChar(_) | Action::InputAddChar(_) => {}
         }
+
         Ok(())
     }
 
@@ -640,35 +891,6 @@ impl App {
         self.comment_file_path = None;
     }
 
-    fn handle_visual_mode_key(&mut self, code: KeyCode) -> Result<()> {
-        let max_line = self.diff_lines.len().saturating_sub(1);
-
-        match code {
-            KeyCode::Esc => {
-                self.exit_visual_mode();
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                // Extend selection by moving cursor down
-                if self.cursor < max_line {
-                    self.cursor += 1;
-                    self.ensure_cursor_visible();
-                }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                // Extend selection by moving cursor up
-                self.cursor = self.cursor.saturating_sub(1);
-                self.ensure_cursor_visible();
-            }
-            KeyCode::Char('c') | KeyCode::Enter => {
-                // Open comment input
-                self.mode = ViewMode::CommentInput;
-                self.comment_input.clear();
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Get the visual selection range (start_line, end_line) sorted.
     pub fn visual_selection(&self) -> Option<(usize, usize)> {
         self.visual_anchor.map(|anchor| {
@@ -676,42 +898,6 @@ impl App {
             let end = anchor.max(self.cursor);
             (start, end)
         })
-    }
-
-    // ─── Comment input mode ───
-
-    fn handle_comment_input_key(&mut self, code: KeyCode) -> Result<()> {
-        match code {
-            KeyCode::Esc => {
-                // Cancel comment/reply input
-                self.mode = ViewMode::Normal;
-                self.comment_input.clear();
-                self.reply_to_comment_id = None;
-                self.exit_visual_mode();
-            }
-            KeyCode::Enter => {
-                // Submit comment or reply if not empty
-                if !self.comment_input.trim().is_empty() {
-                    if self.reply_to_comment_id.is_some() {
-                        self.submit_reply();
-                    } else {
-                        self.submit_comment();
-                    }
-                }
-                self.mode = ViewMode::Normal;
-                self.exit_visual_mode();
-                self.comment_input.clear();
-                self.reply_to_comment_id = None;
-            }
-            KeyCode::Char(c) => {
-                self.comment_input.push(c);
-            }
-            KeyCode::Backspace => {
-                self.comment_input.pop();
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     fn submit_comment(&mut self) {
@@ -850,64 +1036,6 @@ impl App {
         }
     }
 
-    fn handle_tree_key(&mut self, code: KeyCode) -> Result<()> {
-        let max_item = self.flat_items.len().saturating_sub(1);
-
-        match code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected_tree_item < max_item {
-                    self.selected_tree_item += 1;
-                }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.selected_tree_item = self.selected_tree_item.saturating_sub(1);
-            }
-            KeyCode::Char('g') => {
-                self.selected_tree_item = 0;
-            }
-            KeyCode::Char('G') => {
-                self.selected_tree_item = max_item;
-            }
-            KeyCode::Enter => {
-                if let Some(item) = self.flat_items.get(self.selected_tree_item) {
-                    if item.is_directory {
-                        // Toggle directory expansion
-                        file_tree::toggle_directory(&mut self.tree_nodes, &item.tree_path);
-                        self.rebuild_flat_items();
-                    } else if let Some(file_idx) = item.file_index {
-                        // Jump to file in diff
-                        self.current_file_index = file_idx;
-                        self.scroll = diff_view::find_file_start(&self.diff_lines, file_idx);
-                        self.focus = Focus::DiffView;
-                    }
-                }
-            }
-            KeyCode::Char('c') => {
-                // Toggle collapse for current file
-                if let Some(item) = self.flat_items.get(self.selected_tree_item) {
-                    if let Some(file_idx) = item.file_index {
-                        if self.collapsed_files.contains(&file_idx) {
-                            self.collapsed_files.remove(&file_idx);
-                        } else {
-                            self.collapsed_files.insert(file_idx);
-                        }
-                        self.rebuild_diff_lines();
-                    }
-                }
-            }
-            KeyCode::Char('x') => {
-                // Toggle viewed status for current file
-                if let Some(item) = self.flat_items.get(self.selected_tree_item) {
-                    if let Some(file_idx) = item.file_index {
-                        self.toggle_viewed(file_idx);
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Toggle viewed status for a file and persist to state store.
     fn toggle_viewed(&mut self, file_idx: usize) {
         if let Some(file) = self.diff.files.get(file_idx) {
@@ -940,115 +1068,6 @@ impl App {
                 self.rebuild_diff_lines();
             }
         }
-    }
-
-    fn handle_diff_key(&mut self, code: KeyCode) -> Result<()> {
-        let max_line = self.diff_lines.len().saturating_sub(1);
-        let file_count = self.diff.files.len();
-
-        match code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.move_cursor_down(max_line);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.move_cursor_up();
-            }
-            KeyCode::PageDown | KeyCode::Char('d') => {
-                // Page down - skip comment focus
-                self.focused_comment = None;
-                self.cursor = (self.cursor + 20).min(max_line);
-                self.sync_from_cursor();
-            }
-            KeyCode::PageUp => {
-                // Page up
-                self.focused_comment = None;
-                self.cursor = self.cursor.saturating_sub(20);
-                self.sync_from_cursor();
-            }
-            KeyCode::Char('n') => {
-                // Next file
-                self.focused_comment = None;
-                if self.current_file_index < file_count.saturating_sub(1) {
-                    self.current_file_index += 1;
-                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
-                    self.cursor = file_start;
-                    self.scroll = file_start;
-                    self.sync_tree_selection();
-                }
-            }
-            KeyCode::Char('p') => {
-                // Previous file
-                self.focused_comment = None;
-                if self.current_file_index > 0 {
-                    self.current_file_index -= 1;
-                    let file_start = diff_view::find_file_start(&self.diff_lines, self.current_file_index);
-                    self.cursor = file_start;
-                    self.scroll = file_start;
-                    self.sync_tree_selection();
-                }
-            }
-            KeyCode::Char('g') => {
-                self.focused_comment = None;
-                self.cursor = 0;
-                self.scroll = 0;
-                self.sync_from_cursor();
-            }
-            KeyCode::Char('G') => {
-                self.focused_comment = None;
-                self.cursor = max_line;
-                self.scroll = max_line.saturating_sub(20);
-                self.sync_from_cursor();
-            }
-            KeyCode::Char('c') => {
-                // Toggle collapse for current file
-                if self.collapsed_files.contains(&self.current_file_index) {
-                    self.collapsed_files.remove(&self.current_file_index);
-                } else {
-                    self.collapsed_files.insert(self.current_file_index);
-                }
-                self.rebuild_diff_lines();
-            }
-            KeyCode::Char('x') => {
-                // Toggle viewed status for current file
-                self.toggle_viewed(self.current_file_index);
-            }
-            KeyCode::Char('R') => {
-                // Toggle resolved status for focused comment or comment at cursor
-                if let Some(comment_id) = self.focused_comment {
-                    self.toggle_comment_resolved_by_id(comment_id);
-                } else {
-                    self.toggle_comment_resolved();
-                }
-            }
-            KeyCode::Char('D') => {
-                // Delete focused comment
-                if let Some(comment_id) = self.focused_comment {
-                    self.delete_comment(comment_id);
-                }
-            }
-            KeyCode::Char('r') => {
-                // Reply to focused comment
-                if let Some(comment_id) = self.focused_comment {
-                    self.start_reply(comment_id);
-                }
-            }
-            KeyCode::Enter => {
-                // Toggle collapse on the current file when cursor is on its header
-                if let Some(line) = self.diff_lines.get(self.cursor) {
-                    if line.kind == diff_view::LineKind::FileHeader {
-                        let file_idx = line.file_index;
-                        if self.collapsed_files.contains(&file_idx) {
-                            self.collapsed_files.remove(&file_idx);
-                        } else {
-                            self.collapsed_files.insert(file_idx);
-                        }
-                        self.rebuild_diff_lines();
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     /// Move cursor down, handling comment navigation.

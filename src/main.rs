@@ -6,6 +6,7 @@
 mod adapters;
 mod app;
 mod domain;
+mod keymap;
 mod ports;
 mod ui;
 

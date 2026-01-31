@@ -640,13 +640,19 @@ fn apply_visual_selection_highlight(mut line: Line<'static>) -> Line<'static> {
 
 /// Render a GitHub-style inline comment box.
 /// Returns multiple lines for the comment display.
-fn render_comment_box(comment: &Comment, width: u16, focused: bool) -> Vec<Line<'static>> {
+/// If `reply_input` is Some, renders an input box for replying to this comment.
+fn render_comment_box(
+    comment: &Comment,
+    width: u16,
+    focused: bool,
+    reply_input: Option<&str>,
+) -> Vec<Line<'static>> {
     let w = width as usize;
     let inner_w = w.saturating_sub(6); // Account for borders and padding
 
-    // Use accent color when focused
-    let border_color = if focused {
-        styles::FG_HUNK // Accent color when selected
+    // Use accent color when focused or replying
+    let border_color = if focused || reply_input.is_some() {
+        styles::FG_HUNK // Accent color when selected or replying
     } else if comment.resolved {
         styles::FG_MUTED
     } else {
@@ -746,25 +752,88 @@ fn render_comment_box(comment: &Comment, width: u16, focused: bool) -> Vec<Line<
         }
     }
 
-    // ── Footer with hints
-    lines.push(Line::from(vec![
-        Span::styled("  │", Style::default().fg(border_color)),
-        Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
-        Span::styled("│", Style::default().fg(border_color)),
-    ]));
+    // ── Reply input (if replying to this comment)
+    if let Some(input_text) = reply_input {
+        // Empty separator
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
 
-    let hints = if comment.resolved {
-        " R unresolve │ r reply │ D delete"
+        // Reply input header
+        let reply_label = " ↳ Reply:";
+        let reply_label_pad = inner_w.saturating_sub(reply_label.len());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(reply_label, Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+            Span::styled(" ".repeat(reply_label_pad), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+
+        // Reply input area with cursor
+        let max_input_width = inner_w.saturating_sub(4); // Indent for reply
+        if input_text.is_empty() {
+            let placeholder = "Type your reply...";
+            let pad_len = inner_w.saturating_sub(3 + 1 + placeholder.len()); // indent + cursor + text
+            lines.push(Line::from(vec![
+                Span::styled("  │", Style::default().fg(border_color)),
+                Span::styled("   ", Style::default().bg(bg_color)),
+                Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+                Span::styled(placeholder, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+                Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                Span::styled("│", Style::default().fg(border_color)),
+            ]));
+        } else {
+            // Show input text with cursor at end
+            let display_text: String = input_text.chars().take(max_input_width).collect();
+            let line_text = format!("   {}", display_text);
+            let content_len = line_text.chars().count() + 1; // +1 for cursor
+            let pad_len = inner_w.saturating_sub(content_len);
+            lines.push(Line::from(vec![
+                Span::styled("  │", Style::default().fg(border_color)),
+                Span::styled(line_text, Style::default().fg(styles::FG_DEFAULT).bg(bg_color)),
+                Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+                Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                Span::styled("│", Style::default().fg(border_color)),
+            ]));
+        }
+
+        // Reply input hints
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+        let reply_hints = " Enter submit │ Esc cancel";
+        let reply_hints_pad = inner_w.saturating_sub(reply_hints.len());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(reply_hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(" ".repeat(reply_hints_pad), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
     } else {
-        " R resolve │ r reply │ D delete"
-    };
-    let hints_pad = inner_w.saturating_sub(hints.len());
-    lines.push(Line::from(vec![
-        Span::styled("  │", Style::default().fg(border_color)),
-        Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
-        Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
-        Span::styled("│", Style::default().fg(border_color)),
-    ]));
+        // ── Footer with hints (only when not replying)
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(empty_fill.clone(), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+
+        let hints = if comment.resolved {
+            " R unresolve │ r reply │ D delete"
+        } else {
+            " R resolve │ r reply │ D delete"
+        };
+        let hints_pad = inner_w.saturating_sub(hints.len());
+        lines.push(Line::from(vec![
+            Span::styled("  │", Style::default().fg(border_color)),
+            Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
+            Span::styled("│", Style::default().fg(border_color)),
+        ]));
+    }
 
     // ── Bottom border
     let bottom_fill = "─".repeat(inner_w);
@@ -959,6 +1028,7 @@ pub fn render_unified(
     visual_selection: Option<(usize, usize)>,
     focused_comment: Option<i64>,
     draft_comment: Option<&(String, usize, usize, String)>,
+    reply_info: Option<(i64, &str)>, // (comment_id, input_text)
 ) {
     // Gutter width: always 2 chars for consistent layout
     let gutter_width = 2u16;
@@ -1081,7 +1151,11 @@ pub fn render_unified(
                     // Only render comment after the last line of its range
                     if line_num == comment.end_line {
                         let is_focused = focused_comment == Some(comment.id);
-                        let comment_lines = render_comment_box(comment, content_width + gutter_width, is_focused);
+                        // Check if we're replying to this specific comment
+                        let this_reply_input = reply_info
+                            .filter(|(reply_id, _)| *reply_id == comment.id)
+                            .map(|(_, text)| text);
+                        let comment_lines = render_comment_box(comment, content_width + gutter_width, is_focused, this_reply_input);
                         for comment_line in comment_lines {
                             if rendered_count >= visible_height {
                                 break;
@@ -1146,6 +1220,7 @@ pub fn render_split(
     visual_selection: Option<(usize, usize)>,
     focused_comment: Option<i64>,
     draft_comment: Option<&(String, usize, usize, String)>,
+    reply_info: Option<(i64, &str)>, // (comment_id, input_text)
 ) {
     // Gutter width: always 2 chars for consistent layout
     let gutter_width = 2u16;
@@ -1262,7 +1337,11 @@ pub fn render_split(
                     // Only render comment after the last line of its range
                     if line_num == comment.end_line {
                         let is_focused = focused_comment == Some(comment.id);
-                        let comment_lines = render_comment_box(comment, content_area.width, is_focused);
+                        // Check if we're replying to this specific comment
+                        let this_reply_input = reply_info
+                            .filter(|(reply_id, _)| *reply_id == comment.id)
+                            .map(|(_, text)| text);
+                        let comment_lines = render_comment_box(comment, content_area.width, is_focused, this_reply_input);
                         for comment_line in comment_lines {
                             if rendered_count >= visible_height {
                                 break;
@@ -1346,8 +1425,8 @@ fn render_sticky_header(
     let is_current = file_index == current_file;
 
     let toggle = if is_collapsed { "›" } else { "⌄" };
-    let viewed_icon = if is_viewed { " ✓" } else { "" };
-    let stale_icon = if is_stale { " ●" } else { "" };
+    let viewed_icon = if is_viewed && !is_stale { " ✓" } else { "" };
+    let stale_indicator = if is_stale { " ● new" } else { "" };
     let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
     let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
 
@@ -1358,7 +1437,7 @@ fn render_sticky_header(
     // Left: space + toggle + space + path
     let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
     // Right: +N + 2 spaces + -M + viewed + stale + trailing space
-    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_icon.chars().count() + 1;
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_indicator.chars().count() + 1;
 
     // Content lines are w-1 wide, so header should also be w-1
     let inner_width = w.saturating_sub(3);
@@ -1375,7 +1454,7 @@ fn render_sticky_header(
         Span::styled("  ", Style::default()),
         Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
         Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
-        Span::styled(stale_icon, Style::default().fg(styles::FG_WARNING)),
+        Span::styled(stale_indicator, Style::default().fg(styles::FG_WARNING)),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
@@ -1527,14 +1606,14 @@ fn render_file_header_top(
     // Stats on right
     let add_str = format!("+{}", stats.additions);
     let del_str = format!("-{}", stats.deletions);
-    let viewed_icon = if is_viewed { " ✓" } else { "" };
-    let stale_icon = if is_stale { " ●" } else { "" };
+    let viewed_icon = if is_viewed && !is_stale { " ✓" } else { "" };
+    let stale_indicator = if is_stale { " ● new" } else { "" };
 
     // Calculate exact widths for alignment
     // Left: space + toggle + space + path
     let left_len = 1 + toggle.chars().count() + 1 + path.chars().count();
     // Right: +N + 2 spaces + -M + viewed + stale + trailing space
-    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_icon.chars().count() + 1;
+    let right_len = add_str.chars().count() + 2 + del_str.chars().count() + viewed_icon.chars().count() + stale_indicator.chars().count() + 1;
 
     // Content lines are w-1 wide, so header should also be w-1
     let inner_width = w.saturating_sub(3);
@@ -1551,7 +1630,7 @@ fn render_file_header_top(
         Span::styled("  ", Style::default()),
         Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
         Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
-        Span::styled(stale_icon, Style::default().fg(styles::FG_WARNING)),
+        Span::styled(stale_indicator, Style::default().fg(styles::FG_WARNING)),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
