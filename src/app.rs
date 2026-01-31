@@ -721,12 +721,14 @@ impl App {
                                 file_tree::toggle_directory(&mut self.tree_nodes, &item.tree_path);
                                 self.rebuild_flat_items();
                             } else if let Some(file_idx) = item.file_index {
-                                if self.collapsed_files.contains(&file_idx) {
-                                    self.collapsed_files.remove(&file_idx);
-                                } else {
+                                let is_collapsing = !self.collapsed_files.contains(&file_idx);
+                                if is_collapsing {
                                     self.collapsed_files.insert(file_idx);
+                                } else {
+                                    self.collapsed_files.remove(&file_idx);
                                 }
                                 self.rebuild_diff_lines();
+                                self.adjust_cursor_after_collapse(file_idx, is_collapsing);
                             }
                         }
                     }
@@ -738,12 +740,14 @@ impl App {
                             } else {
                                 self.current_file_index
                             };
-                            if self.collapsed_files.contains(&file_idx) {
-                                self.collapsed_files.remove(&file_idx);
-                            } else {
+                            let is_collapsing = !self.collapsed_files.contains(&file_idx);
+                            if is_collapsing {
                                 self.collapsed_files.insert(file_idx);
+                            } else {
+                                self.collapsed_files.remove(&file_idx);
                             }
                             self.rebuild_diff_lines();
+                            self.adjust_cursor_after_collapse(file_idx, is_collapsing);
                         }
                     }
                     _ => {}
@@ -771,7 +775,9 @@ impl App {
                         self.rebuild_flat_items();
                     } else if let Some(file_idx) = item.file_index {
                         self.current_file_index = file_idx;
-                        self.scroll = diff_view::find_file_start(&self.diff_lines, file_idx);
+                        let file_start = diff_view::find_file_start(&self.diff_lines, file_idx);
+                        self.cursor = file_start;
+                        self.scroll = file_start;
                         self.focus = Focus::DiffView;
                     }
                 }
@@ -1066,6 +1072,7 @@ impl App {
 
                 // Rebuild diff lines since we collapsed a file
                 self.rebuild_diff_lines();
+                self.adjust_cursor_after_collapse(file_idx, true);
             }
         }
     }
@@ -1158,6 +1165,45 @@ impl App {
         self.focused_comment = None;
     }
 
+    /// Adjust cursor position after collapsing/expanding a file.
+    /// When collapsing, move cursor to the file header if it was within the file's content.
+    fn adjust_cursor_after_collapse(&mut self, collapsed_file_idx: usize, is_collapsing: bool) {
+        let max_line = self.diff_lines.len().saturating_sub(1);
+
+        // Clamp cursor to valid bounds first
+        if self.cursor > max_line {
+            self.cursor = max_line;
+        }
+
+        // If we just collapsed a file and cursor is beyond the new bounds,
+        // or if cursor was in the collapsed file's content, move to file header
+        if is_collapsing {
+            // Find where this file's header is in the new diff_lines
+            let file_header_idx = diff_view::find_file_start(&self.diff_lines, collapsed_file_idx);
+
+            // Check if current cursor points to a line in a different file or is past the end
+            if let Some(line) = self.diff_lines.get(self.cursor) {
+                // If cursor is now on a different file or an empty line after collapse,
+                // move to the collapsed file's header
+                if line.file_index != collapsed_file_idx {
+                    // Cursor jumped to a different file, put it on the collapsed file's header
+                    self.cursor = file_header_idx;
+                }
+            } else {
+                // Cursor is out of bounds, move to file header
+                self.cursor = file_header_idx;
+            }
+        }
+
+        // Ensure scroll is valid
+        if self.scroll > max_line {
+            self.scroll = max_line;
+        }
+
+        self.ensure_cursor_visible();
+        self.sync_from_cursor();
+    }
+
     /// Ensure the cursor is visible in the viewport with scroll margin.
     fn ensure_cursor_visible(&mut self) {
         // Use stored viewport height (updated during render)
@@ -1172,6 +1218,18 @@ impl App {
             0
         };
 
+        // If a comment is focused, we need extra space to display the comment box
+        // The comment box is rendered after the cursor line, so we need to reserve
+        // space for it below the cursor
+        let focused_comment_lines = if self.show_comments {
+            self.focused_comment
+                .and_then(|id| self.comments.iter().find(|c| c.id == id))
+                .map(|c| self.estimate_comment_height(c))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         // Effective viewport height is reduced by comment rendered lines
         let vh = base_vh.saturating_sub(comment_lines).max(3);
 
@@ -1182,6 +1240,27 @@ impl App {
             // Cursor below viewport - scroll down just enough to show cursor at bottom
             self.scroll = self.cursor + 1 - vh;
         }
+
+        // If we have a focused comment, ensure there's room to display it
+        // The comment is rendered after the cursor line, so we need space below
+        if focused_comment_lines > 0 {
+            let lines_after_cursor = vh.saturating_sub(self.cursor.saturating_sub(self.scroll) + 1);
+            if lines_after_cursor < focused_comment_lines {
+                // Not enough room below cursor for comment, scroll up to make room
+                let extra_scroll = focused_comment_lines.saturating_sub(lines_after_cursor);
+                self.scroll = self.scroll.saturating_sub(extra_scroll);
+            }
+        }
+    }
+
+    /// Estimate the height of a single comment box in lines.
+    fn estimate_comment_height(&self, comment: &Comment) -> usize {
+        // Base: header, author, empty, body placeholder, empty, hints, border = 7
+        // + ~1 line per 40 chars of body text
+        // + 3 lines per reply
+        let body_lines = (comment.body.len() / 40).max(1);
+        let reply_lines = comment.replies.len() * 3;
+        7 + body_lines + reply_lines
     }
 
     /// Estimate the number of rendered lines that comments take up in a range of diff lines.
