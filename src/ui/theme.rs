@@ -95,6 +95,7 @@ const THEME_ORDER: &[&str] = &[
     "catppuccin-macchiato",
     "catppuccin-frappe",
     "catppuccin-latte",
+    "teoppuccin",
 ];
 
 pub fn available_themes() -> Vec<String> {
@@ -197,6 +198,7 @@ fn find_theme(name: &str) -> Option<ThemeSpec> {
         "catppuccin-frappe" | "catpuccin-frappe" => Some(catppuccin_frappe()),
         "catppuccin-light" | "catpuccin-light" | "catppuccin-latte"
         | "catpuccin-latte" => Some(catppuccin_latte()),
+        "teoppuccin" => Some(teoppuccin()),
         _ => None,
     }
 }
@@ -530,6 +532,31 @@ fn catppuccin_latte() -> ThemeSpec {
     )
 }
 
+fn teoppuccin() -> ThemeSpec {
+    // Based on Catppuccin Frappe with darker base and custom green/yellow
+    catppuccin_theme(
+        "teoppuccin",
+        CatppuccinPalette {
+            base: (20, 24, 31),    // #14181F
+            mantle: (20, 24, 31),  // #14181F
+            surface0: (65, 69, 89),
+            surface1: (81, 87, 109),
+            surface2: (98, 104, 128),
+            text: (198, 208, 245),
+            subtext0: (165, 173, 206),
+            overlay0: (115, 121, 148),
+            blue: (140, 170, 238),
+            lavender: (186, 187, 241),
+            mauve: (202, 158, 230),
+            green: (158, 213, 118),  // #9ed576
+            yellow: (209, 181, 125), // #d1b57d
+            peach: (239, 159, 118),
+            red: (231, 130, 132),
+        },
+        false,
+    )
+}
+
 // ─── Syntect theme builder ───────────────────────────────────────────────────
 
 fn build_syntect_theme(palette: &SyntaxPalette, name: &str) -> Theme {
@@ -603,5 +630,6 @@ mod tests {
         let names = available_themes();
         assert!(names.contains(&"github-dark".to_string()));
         assert!(names.contains(&"catppuccin-mocha".to_string()));
+        assert!(names.contains(&"teoppuccin".to_string()));
     }
 }
