@@ -333,7 +333,6 @@ impl App {
         // Rebuild UI data structures
         self.tree_nodes = file_tree::build_tree(&diff);
         self.flat_items = file_tree::flatten_tree(&self.tree_nodes, &self.filter);
-        self.diff_lines = diff_view::build_unified_lines(&diff, &self.collapsed_files);
 
         // Reload viewed state (in case files changed)
         let (viewed_files, viewed_timestamps) =
@@ -342,6 +341,7 @@ impl App {
         self.preview.merge_base = merge_base;
         self.preview.commits = commits;
         self.diff = diff;
+        self.rebuild_diff_lines();
         self.viewed_files = viewed_files;
         self.viewed_timestamps = viewed_timestamps;
 
