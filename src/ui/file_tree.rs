@@ -152,7 +152,7 @@ fn insert_into_tree(
     }
 }
 
-fn sort_tree(nodes: &mut Vec<TreeNode>) {
+fn sort_tree(nodes: &mut [TreeNode]) {
     nodes.sort_by(|a, b| {
         match (a.is_directory(), b.is_directory()) {
             (true, false) => std::cmp::Ordering::Less,
@@ -302,14 +302,13 @@ pub fn toggle_directory(nodes: &mut [TreeNode], tree_path: &[usize]) {
         if let TreeNode::Directory { expanded, .. } = &mut nodes[idx] {
             *expanded = !*expanded;
         }
-    } else {
-        if let TreeNode::Directory { children, .. } = &mut nodes[idx] {
-            toggle_directory(children, &tree_path[1..]);
-        }
+    } else if let TreeNode::Directory { children, .. } = &mut nodes[idx] {
+        toggle_directory(children, &tree_path[1..]);
     }
 }
 
 /// Render the file tree sidebar with filter input.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     area: Rect,

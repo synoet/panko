@@ -1058,7 +1058,7 @@ pub fn render_unified(
 
         // Build full line: gutter (2 chars) + header content (same as regular lines)
         let mut spans = vec![Span::styled("  ", Style::default())];
-        spans.extend(sticky_line.spans.drain(..));
+        spans.append(&mut sticky_line.spans);
 
         let sticky_para = Paragraph::new(vec![Line::from(spans)]);
         frame.render_widget(sticky_para, sticky_rect);
@@ -1111,14 +1111,12 @@ pub fn render_unified(
         };
 
         // Prepend gutter (always present for consistent layout)
-        // Priority: cursor > uncommitted > visual selection > comment range > default
+        // Priority: cursor > uncommitted > visual selection / comment range > default
         let gutter_style = if is_cursor_line {
             Style::default().fg(styles::fg_cursor())
         } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::fg_warning())
-        } else if is_selected {
-            Style::default().fg(styles::fg_hunk())
-        } else if is_in_comment_range {
+        } else if is_selected || is_in_comment_range {
             Style::default().fg(styles::fg_hunk())
         } else {
             Style::default().fg(styles::fg_border())
@@ -1137,7 +1135,7 @@ pub fn render_unified(
         };
 
         let mut spans = vec![Span::styled(gutter_char, gutter_style)];
-        spans.extend(rendered.spans.drain(..));
+        spans.append(&mut rendered.spans);
         visible_lines.push(Line::from(spans));
         rendered_count += 1;
 
@@ -1297,14 +1295,12 @@ pub fn render_split(
         };
 
         // Prepend gutter (always present for consistent layout)
-        // Priority: cursor > uncommitted > visual selection > comment range > default
+        // Priority: cursor > uncommitted > visual selection / comment range > default
         let gutter_style = if is_cursor_line {
             Style::default().fg(styles::fg_cursor())
         } else if diff_source == DiffSource::All && is_uncommitted {
             Style::default().fg(styles::fg_warning())
-        } else if is_selected {
-            Style::default().fg(styles::fg_hunk())
-        } else if is_in_comment_range {
+        } else if is_selected || is_in_comment_range {
             Style::default().fg(styles::fg_hunk())
         } else {
             Style::default().fg(styles::fg_border())
@@ -1323,7 +1319,7 @@ pub fn render_split(
         };
 
         let mut spans = vec![Span::styled(gutter_char, gutter_style)];
-        spans.extend(rendered.spans.drain(..));
+        spans.append(&mut rendered.spans);
         visible_lines.push(Line::from(spans));
         rendered_count += 1;
 
@@ -1411,6 +1407,7 @@ fn find_sticky_header(lines: &[DiffViewLine], scroll: usize, _current_file: usiz
 }
 
 /// Render a sticky file header (matches render_file_header_top style).
+#[allow(clippy::too_many_arguments)]
 fn render_sticky_header(
     path: &str,
     stats: &DiffStats,
@@ -1586,6 +1583,7 @@ fn render_unified_line(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_file_header_top(
     path: &str,
     stats: &DiffStats,
@@ -1707,21 +1705,19 @@ fn render_split_line(
             let has_old_changes = old_segments.iter().any(|s| s.is_changed);
             let has_new_changes = new_segments.iter().any(|s| s.is_changed);
 
-            let (old_margin_bg, old_line_bg, old_word_bg): (Option<Color>, Option<Color>, Option<Color>) = if !old_segments.is_empty() && new_segments.is_empty() {
-                (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()))
-            } else if has_old_changes {
-                (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()))
-            } else {
-                (None, None, None) // No background for context
-            };
+            let (old_margin_bg, old_line_bg, old_word_bg): (Option<Color>, Option<Color>, Option<Color>) =
+                if (!old_segments.is_empty() && new_segments.is_empty()) || has_old_changes {
+                    (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()))
+                } else {
+                    (None, None, None) // No background for context
+                };
 
-            let (new_margin_bg, new_line_bg, new_word_bg): (Option<Color>, Option<Color>, Option<Color>) = if !new_segments.is_empty() && old_segments.is_empty() {
-                (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()))
-            } else if has_new_changes {
-                (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()))
-            } else {
-                (None, None, None) // No background for context
-            };
+            let (new_margin_bg, new_line_bg, new_word_bg): (Option<Color>, Option<Color>, Option<Color>) =
+                if (!new_segments.is_empty() && old_segments.is_empty()) || has_new_changes {
+                    (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()))
+                } else {
+                    (None, None, None) // No background for context
+                };
 
             let mut spans = Vec::with_capacity(old_segments.len() + new_segments.len() + 8);
 

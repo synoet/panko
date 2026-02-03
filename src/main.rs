@@ -302,7 +302,7 @@ fn print_comments_text(comments: &[&domain::Comment]) {
         let status = if comment.resolved { "RESOLVED" } else { "OPEN" };
         let status_icon = if comment.resolved { "✓" } else { "○" };
 
-        println!("{}──────────────────────────────────────", "");
+        println!("──────────────────────────────────────");
         println!("{} #{} [{}]", status_icon, comment.id, status);
         println!("  File: {} {}", comment.file_path, comment.line_range_display());
         println!("  Author: {} ({})", comment.author, comment.relative_time());

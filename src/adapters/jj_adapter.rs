@@ -367,8 +367,8 @@ fn parse_unified_diff(text: &str) -> Result<Diff> {
                 } else if line.starts_with('-') && !line.starts_with("---") {
                     f.deletions += 1;
                     h.lines.push(DiffLine::Deletion(line[1..].to_string()));
-                } else if line.starts_with(' ') {
-                    h.lines.push(DiffLine::Context(line[1..].to_string()));
+                } else if let Some(stripped) = line.strip_prefix(' ') {
+                    h.lines.push(DiffLine::Context(stripped.to_string()));
                 }
             }
         }

@@ -573,7 +573,6 @@ fn build_syntect_theme(palette: &SyntaxPalette, name: &str) -> Theme {
             theme_item("punctuation", palette.fg, false, false),
             theme_item("keyword.operator", palette.fg, false, false),
         ],
-        ..Default::default()
     }
 }
 

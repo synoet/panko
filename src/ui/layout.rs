@@ -216,6 +216,7 @@ pub fn render_main(
 }
 
 /// Render Zed-style status bar with icon toggles.
+#[allow(clippy::too_many_arguments)]
 fn render_status_bar(
     frame: &mut Frame,
     area: Rect,
@@ -354,6 +355,7 @@ fn add_toggle_icon(spans: &mut Vec<Span<'static>>, icon: &'static str, label: &s
 }
 
 /// Render the global header spanning full width.
+#[allow(clippy::too_many_arguments)]
 fn render_global_header(
     frame: &mut Frame,
     area: Rect,
