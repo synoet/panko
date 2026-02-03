@@ -236,7 +236,7 @@ fn highlight_with_word_diff(content: &str, ext: &str, changed_chars: &[bool]) ->
         }
 
         // Extract style info
-        let fg = span.style.fg.unwrap_or(styles::FG_DEFAULT);
+        let fg = span.style.fg.unwrap_or(styles::fg_default());
         let bold = span.style.add_modifier.contains(ratatui::style::Modifier::BOLD);
         let italic = span.style.add_modifier.contains(ratatui::style::Modifier::ITALIC);
 
@@ -282,7 +282,7 @@ fn highlight_simple(content: &str, ext: &str) -> Vec<HighlightedSegment> {
         .into_iter()
         .filter(|span| !span.content.is_empty())
         .map(|span| {
-            let fg = span.style.fg.unwrap_or(styles::FG_DEFAULT);
+            let fg = span.style.fg.unwrap_or(styles::fg_default());
             let bold = span.style.add_modifier.contains(ratatui::style::Modifier::BOLD);
             let italic = span.style.add_modifier.contains(ratatui::style::Modifier::ITALIC);
             HighlightedSegment {
@@ -331,7 +331,7 @@ pub fn build_unified_lines(diff: &Diff, collapsed: &HashSet<usize>) -> Vec<DiffV
                     prefix: ' ',
                     segments: vec![HighlightedSegment {
                         text: "Binary file".to_string(),
-                        fg: styles::FG_MUTED,
+                        fg: styles::fg_muted(),
                         bold: false,
                         italic: true,
                         is_changed: false,
@@ -488,7 +488,7 @@ pub fn build_split_lines(diff: &Diff, collapsed: &HashSet<usize>) -> Vec<DiffVie
         if file.is_binary {
             let seg = HighlightedSegment {
                 text: "Binary file".to_string(),
-                fg: styles::FG_MUTED,
+                fg: styles::fg_muted(),
                 bold: false,
                 italic: true,
                 is_changed: false,
@@ -628,9 +628,10 @@ fn apply_visual_selection_highlight(mut line: Line<'static>) -> Line<'static> {
     for span in line.spans.iter_mut() {
         // Map current background to brighter selection variant
         let new_bg = match span.style.bg {
-            Some(styles::BG_ADDITION_LINE) => styles::BG_ADDITION_SELECTED,
-            Some(styles::BG_DELETION_LINE) => styles::BG_DELETION_SELECTED,
-            Some(styles::BG_DEFAULT) | None => styles::BG_CONTEXT_SELECTED,
+            Some(bg) if bg == styles::bg_addition_line() => styles::bg_addition_selected(),
+            Some(bg) if bg == styles::bg_deletion_line() => styles::bg_deletion_selected(),
+            Some(bg) if bg == styles::bg_default() => styles::bg_context_selected(),
+            None => styles::bg_context_selected(),
             Some(other) => other, // Keep special backgrounds (word highlights, etc.)
         };
         span.style = span.style.bg(new_bg);
@@ -652,13 +653,13 @@ fn render_comment_box(
 
     // Use accent color when focused or replying
     let border_color = if focused || reply_input.is_some() {
-        styles::FG_HUNK // Accent color when selected or replying
+        styles::fg_hunk() // Accent color when selected or replying
     } else if comment.resolved {
-        styles::FG_MUTED
+        styles::fg_muted()
     } else {
-        styles::FG_BORDER
+        styles::fg_border()
     };
-    let bg_color = styles::BG_SIDEBAR;
+    let bg_color = styles::bg_sidebar();
 
     let mut lines = Vec::new();
 
@@ -670,7 +671,7 @@ fn render_comment_box(
 
     lines.push(Line::from(vec![
         Span::styled("  ┌─", Style::default().fg(border_color)),
-        Span::styled(header_text, Style::default().fg(styles::FG_HUNK)),
+        Span::styled(header_text, Style::default().fg(styles::fg_hunk())),
         Span::styled(header_fill, Style::default().fg(border_color)),
         Span::styled("┐", Style::default().fg(border_color)),
     ]));
@@ -681,9 +682,9 @@ fn render_comment_box(
     let author_pad = inner_w.saturating_sub(author_line.chars().count());
 
     let author_style = if comment.resolved {
-        Style::default().fg(styles::FG_MUTED).bg(bg_color)
+        Style::default().fg(styles::fg_muted()).bg(bg_color)
     } else {
-        Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
+        Style::default().fg(styles::fg_default()).bg(bg_color)
     };
 
     lines.push(Line::from(vec![
@@ -703,9 +704,9 @@ fn render_comment_box(
 
     // ── Comment body (may wrap to multiple lines)
     let body_style = if comment.resolved {
-        Style::default().fg(styles::FG_MUTED).bg(bg_color).add_modifier(Modifier::ITALIC)
+        Style::default().fg(styles::fg_muted()).bg(bg_color).add_modifier(Modifier::ITALIC)
     } else {
-        Style::default().fg(styles::FG_DEFAULT).bg(bg_color)
+        Style::default().fg(styles::fg_default()).bg(bg_color)
     };
 
     // Simple word wrap for comment body
@@ -734,7 +735,7 @@ fn render_comment_box(
         let reply_pad = inner_w.saturating_sub(reply_header.chars().count());
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(reply_header, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(reply_header, Style::default().fg(styles::fg_muted()).bg(bg_color)),
             Span::styled(" ".repeat(reply_pad), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
         ]));
@@ -745,7 +746,7 @@ fn render_comment_box(
             let pad_len = inner_w.saturating_sub(line_text.chars().count());
             lines.push(Line::from(vec![
                 Span::styled("  │", Style::default().fg(border_color)),
-                Span::styled(line_text, Style::default().fg(styles::FG_DEFAULT).bg(bg_color)),
+                Span::styled(line_text, Style::default().fg(styles::fg_default()).bg(bg_color)),
                 Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                 Span::styled("│", Style::default().fg(border_color)),
             ]));
@@ -766,7 +767,7 @@ fn render_comment_box(
         let reply_label_pad = inner_w.saturating_sub(reply_label.len());
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(reply_label, Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+            Span::styled(reply_label, Style::default().fg(styles::fg_hunk()).bg(bg_color)),
             Span::styled(" ".repeat(reply_label_pad), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
         ]));
@@ -779,8 +780,8 @@ fn render_comment_box(
             lines.push(Line::from(vec![
                 Span::styled("  │", Style::default().fg(border_color)),
                 Span::styled("   ", Style::default().bg(bg_color)),
-                Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
-                Span::styled(placeholder, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+                Span::styled("█", Style::default().fg(styles::fg_hunk()).bg(bg_color)),
+                Span::styled(placeholder, Style::default().fg(styles::fg_muted()).bg(bg_color)),
                 Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                 Span::styled("│", Style::default().fg(border_color)),
             ]));
@@ -792,8 +793,8 @@ fn render_comment_box(
             let pad_len = inner_w.saturating_sub(content_len);
             lines.push(Line::from(vec![
                 Span::styled("  │", Style::default().fg(border_color)),
-                Span::styled(line_text, Style::default().fg(styles::FG_DEFAULT).bg(bg_color)),
-                Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+                Span::styled(line_text, Style::default().fg(styles::fg_default()).bg(bg_color)),
+                Span::styled("█", Style::default().fg(styles::fg_hunk()).bg(bg_color)),
                 Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                 Span::styled("│", Style::default().fg(border_color)),
             ]));
@@ -809,7 +810,7 @@ fn render_comment_box(
         let reply_hints_pad = inner_w.saturating_sub(reply_hints.len());
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(reply_hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(reply_hints, Style::default().fg(styles::fg_muted()).bg(bg_color)),
             Span::styled(" ".repeat(reply_hints_pad), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
         ]));
@@ -829,7 +830,7 @@ fn render_comment_box(
         let hints_pad = inner_w.saturating_sub(hints.len());
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
-            Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+            Span::styled(hints, Style::default().fg(styles::fg_muted()).bg(bg_color)),
             Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
         ]));
@@ -857,8 +858,8 @@ fn render_draft_comment_box(
     let w = width as usize;
     let inner_w = w.saturating_sub(6);
 
-    let border_color = styles::FG_HUNK; // Accent color for active draft
-    let bg_color = styles::BG_SIDEBAR;
+    let border_color = styles::fg_hunk(); // Accent color for active draft
+    let bg_color = styles::bg_sidebar();
 
     let mut lines = Vec::new();
 
@@ -874,7 +875,7 @@ fn render_draft_comment_box(
 
     lines.push(Line::from(vec![
         Span::styled("  ┌─", Style::default().fg(border_color)),
-        Span::styled(header_text, Style::default().fg(styles::FG_HUNK)),
+        Span::styled(header_text, Style::default().fg(styles::fg_hunk())),
         Span::styled(header_fill, Style::default().fg(border_color)),
         Span::styled("┐", Style::default().fg(border_color)),
     ]));
@@ -891,8 +892,8 @@ fn render_draft_comment_box(
     ]));
 
     // Body input area with cursor at end of text
-    let text_style = Style::default().fg(styles::FG_DEFAULT).bg(bg_color);
-    let placeholder_style = Style::default().fg(styles::FG_MUTED).bg(bg_color);
+    let text_style = Style::default().fg(styles::fg_default()).bg(bg_color);
+    let placeholder_style = Style::default().fg(styles::fg_muted()).bg(bg_color);
     let max_content_width = inner_w.saturating_sub(2); // -2 for leading space and cursor
 
     if body.is_empty() {
@@ -903,7 +904,7 @@ fn render_draft_comment_box(
         lines.push(Line::from(vec![
             Span::styled("  │", Style::default().fg(border_color)),
             Span::styled(" ", Style::default().bg(bg_color)),
-            Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+            Span::styled("█", Style::default().fg(styles::fg_hunk()).bg(bg_color)),
             Span::styled(placeholder, placeholder_style),
             Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
             Span::styled("│", Style::default().fg(border_color)),
@@ -927,7 +928,7 @@ fn render_draft_comment_box(
                 lines.push(Line::from(vec![
                     Span::styled("  │", Style::default().fg(border_color)),
                     Span::styled(line_text, text_style),
-                    Span::styled("█", Style::default().fg(styles::FG_HUNK).bg(bg_color)),
+                    Span::styled("█", Style::default().fg(styles::fg_hunk()).bg(bg_color)),
                     Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                     Span::styled("│", Style::default().fg(border_color)),
                 ]));
@@ -960,7 +961,7 @@ fn render_draft_comment_box(
     let hints_pad = inner_w.saturating_sub(hints.len());
     lines.push(Line::from(vec![
         Span::styled("  │", Style::default().fg(border_color)),
-        Span::styled(hints, Style::default().fg(styles::FG_MUTED).bg(bg_color)),
+        Span::styled(hints, Style::default().fg(styles::fg_muted()).bg(bg_color)),
         Span::styled(" ".repeat(hints_pad), Style::default().bg(bg_color)),
         Span::styled("│", Style::default().fg(border_color)),
     ]));
@@ -1112,15 +1113,15 @@ pub fn render_unified(
         // Prepend gutter (always present for consistent layout)
         // Priority: cursor > uncommitted > visual selection > comment range > default
         let gutter_style = if is_cursor_line {
-            Style::default().fg(styles::FG_CURSOR)
+            Style::default().fg(styles::fg_cursor())
         } else if diff_source == DiffSource::All && is_uncommitted {
-            Style::default().fg(styles::FG_WARNING)
+            Style::default().fg(styles::fg_warning())
         } else if is_selected {
-            Style::default().fg(styles::FG_HUNK)
+            Style::default().fg(styles::fg_hunk())
         } else if is_in_comment_range {
-            Style::default().fg(styles::FG_HUNK)
+            Style::default().fg(styles::fg_hunk())
         } else {
-            Style::default().fg(styles::FG_BORDER)
+            Style::default().fg(styles::fg_border())
         };
 
         let gutter_char = if is_cursor_line {
@@ -1298,15 +1299,15 @@ pub fn render_split(
         // Prepend gutter (always present for consistent layout)
         // Priority: cursor > uncommitted > visual selection > comment range > default
         let gutter_style = if is_cursor_line {
-            Style::default().fg(styles::FG_CURSOR)
+            Style::default().fg(styles::fg_cursor())
         } else if diff_source == DiffSource::All && is_uncommitted {
-            Style::default().fg(styles::FG_WARNING)
+            Style::default().fg(styles::fg_warning())
         } else if is_selected {
-            Style::default().fg(styles::FG_HUNK)
+            Style::default().fg(styles::fg_hunk())
         } else if is_in_comment_range {
-            Style::default().fg(styles::FG_HUNK)
+            Style::default().fg(styles::fg_hunk())
         } else {
-            Style::default().fg(styles::FG_BORDER)
+            Style::default().fg(styles::fg_border())
         };
 
         let gutter_char = if is_cursor_line {
@@ -1427,8 +1428,8 @@ fn render_sticky_header(
     let toggle = if is_collapsed { "›" } else { "⌄" };
     let viewed_icon = if is_viewed && !is_stale { " ✓" } else { "" };
     let stale_indicator = if is_stale { " ● new" } else { "" };
-    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
-    let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
+    let border_color = if is_current { styles::fg_hunk() } else { styles::fg_border() };
+    let path_color = if is_current { styles::fg_default() } else { styles::fg_path() };
 
     let add_str = format!("+{}", stats.additions);
     let del_str = format!("-{}", stats.deletions);
@@ -1450,11 +1451,11 @@ fn render_sticky_header(
             Style::default().fg(path_color).add_modifier(if is_current { Modifier::BOLD } else { Modifier::empty() }),
         ),
         Span::styled(" ".repeat(padding_len), Style::default()),
-        Span::styled(add_str, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(add_str, Style::default().fg(styles::fg_addition())),
         Span::styled("  ", Style::default()),
-        Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
-        Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
-        Span::styled(stale_indicator, Style::default().fg(styles::FG_WARNING)),
+        Span::styled(del_str, Style::default().fg(styles::fg_deletion())),
+        Span::styled(viewed_icon, Style::default().fg(styles::fg_addition())),
+        Span::styled(stale_indicator, Style::default().fg(styles::fg_warning())),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
@@ -1491,11 +1492,11 @@ fn render_unified_line(
             let padding_len = inner_width.saturating_sub(used_width);
 
             Line::from(vec![
-                Span::styled(styles::BORDER_VERTICAL, border_style),
-                Span::styled(expand_area, Style::default().fg(styles::FG_HUNK).bg(styles::BG_HUNK_EXPAND)),
+                Span::styled(styles::border_vertical(), border_style),
+                Span::styled(expand_area, Style::default().fg(styles::fg_hunk()).bg(styles::bg_hunk_expand())),
                 Span::styled(hunk_text, styles::style_hunk_header()),
-                Span::styled(" ".repeat(padding_len), Style::default().bg(styles::BG_HUNK_HEADER)),
-                Span::styled(styles::BORDER_VERTICAL, border_style),
+                Span::styled(" ".repeat(padding_len), Style::default().bg(styles::bg_hunk_header())),
+                Span::styled(styles::border_vertical(), border_style),
             ])
         }
         LineContent::UnifiedLine {
@@ -1508,21 +1509,21 @@ fn render_unified_line(
             let new_str = new_num.map(|n| format!("{:>4}", n)).unwrap_or_else(|| "    ".into());
 
             let (margin_bg, line_bg, word_bg, prefix_style) = match line.kind {
-                LineKind::Addition => (Some(styles::BG_ADDITION_MARGIN), Some(styles::BG_ADDITION_LINE), Some(styles::BG_ADDITION_WORD), styles::style_addition()),
-                LineKind::Deletion => (Some(styles::BG_DELETION_MARGIN), Some(styles::BG_DELETION_LINE), Some(styles::BG_DELETION_WORD), styles::style_deletion()),
+                LineKind::Addition => (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()), styles::style_addition()),
+                LineKind::Deletion => (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()), styles::style_deletion()),
                 _ => (None, None, None, styles::style_context()), // No background for context lines
             };
 
             let content_width = w.saturating_sub(14);
 
             let mut spans = Vec::with_capacity(segments.len() + 6);
-            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
+            spans.push(Span::styled(styles::border_vertical(), border_style));
 
             // Line numbers with optional background
             let line_num_style = if let Some(bg) = margin_bg {
-                Style::default().fg(styles::FG_LINE_NUM).bg(bg)
+                Style::default().fg(styles::fg_line_num()).bg(bg)
             } else {
-                Style::default().fg(styles::FG_LINE_NUM)
+                Style::default().fg(styles::fg_line_num())
             };
             spans.push(Span::styled(old_str, line_num_style));
             spans.push(Span::styled(" ", line_num_style));
@@ -1575,7 +1576,7 @@ fn render_unified_line(
                 spans.push(Span::styled(" ".repeat(content_width - char_count), pad_style));
             }
 
-            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
+            spans.push(Span::styled(styles::border_vertical(), border_style));
             Line::from(spans)
         }
         LineContent::Empty => {
@@ -1600,8 +1601,8 @@ fn render_file_header_top(
     let is_current = file_index == current_file;
 
     let toggle = if is_collapsed { "›" } else { "⌄" };
-    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
-    let path_color = if is_current { styles::FG_DEFAULT } else { styles::FG_PATH };
+    let border_color = if is_current { styles::fg_hunk() } else { styles::fg_border() };
+    let path_color = if is_current { styles::fg_default() } else { styles::fg_path() };
 
     // Stats on right
     let add_str = format!("+{}", stats.additions);
@@ -1626,11 +1627,11 @@ fn render_file_header_top(
             Style::default().fg(path_color).add_modifier(if is_current { Modifier::BOLD } else { Modifier::empty() }),
         ),
         Span::styled(" ".repeat(padding_len), Style::default()),
-        Span::styled(add_str, Style::default().fg(styles::FG_ADDITION)),
+        Span::styled(add_str, Style::default().fg(styles::fg_addition())),
         Span::styled("  ", Style::default()),
-        Span::styled(del_str, Style::default().fg(styles::FG_DELETION)),
-        Span::styled(viewed_icon, Style::default().fg(styles::FG_ADDITION)),
-        Span::styled(stale_indicator, Style::default().fg(styles::FG_WARNING)),
+        Span::styled(del_str, Style::default().fg(styles::fg_deletion())),
+        Span::styled(viewed_icon, Style::default().fg(styles::fg_addition())),
+        Span::styled(stale_indicator, Style::default().fg(styles::fg_warning())),
         Span::styled(" ", Style::default()),
         Span::styled("╮", Style::default().fg(border_color)),
     ])
@@ -1639,7 +1640,7 @@ fn render_file_header_top(
 fn render_file_header_bottom(file_index: usize, current_file: usize, width: u16) -> Line<'static> {
     let w = width as usize;
     let is_current = file_index == current_file;
-    let border_color = if is_current { styles::FG_HUNK } else { styles::FG_BORDER };
+    let border_color = if is_current { styles::fg_hunk() } else { styles::fg_border() };
 
     // Content lines are: │ + 4 + 1 + 4 + 2 + content + │ = 12 + content + 1 = 13 + (w-14) = w-1
     // So bottom border should also be w-1: ╰ + (w-3) + ╯ = 1 + (w-3) + 1 = w-1
@@ -1684,11 +1685,11 @@ fn render_split_line(
             let padding_len = inner_width.saturating_sub(used_width);
 
             Line::from(vec![
-                Span::styled(styles::BORDER_VERTICAL, border_style),
-                Span::styled(expand_area, Style::default().fg(styles::FG_HUNK).bg(styles::BG_HUNK_EXPAND)),
+                Span::styled(styles::border_vertical(), border_style),
+                Span::styled(expand_area, Style::default().fg(styles::fg_hunk()).bg(styles::bg_hunk_expand())),
                 Span::styled(hunk_text, styles::style_hunk_header()),
-                Span::styled(" ".repeat(padding_len), Style::default().bg(styles::BG_HUNK_HEADER)),
-                Span::styled(styles::BORDER_VERTICAL, border_style),
+                Span::styled(" ".repeat(padding_len), Style::default().bg(styles::bg_hunk_header())),
+                Span::styled(styles::border_vertical(), border_style),
             ])
         }
         LineContent::SplitLine {
@@ -1707,17 +1708,17 @@ fn render_split_line(
             let has_new_changes = new_segments.iter().any(|s| s.is_changed);
 
             let (old_margin_bg, old_line_bg, old_word_bg): (Option<Color>, Option<Color>, Option<Color>) = if !old_segments.is_empty() && new_segments.is_empty() {
-                (Some(styles::BG_DELETION_MARGIN), Some(styles::BG_DELETION_LINE), Some(styles::BG_DELETION_WORD))
+                (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()))
             } else if has_old_changes {
-                (Some(styles::BG_DELETION_MARGIN), Some(styles::BG_DELETION_LINE), Some(styles::BG_DELETION_WORD))
+                (Some(styles::bg_deletion_margin()), Some(styles::bg_deletion_line()), Some(styles::bg_deletion_word()))
             } else {
                 (None, None, None) // No background for context
             };
 
             let (new_margin_bg, new_line_bg, new_word_bg): (Option<Color>, Option<Color>, Option<Color>) = if !new_segments.is_empty() && old_segments.is_empty() {
-                (Some(styles::BG_ADDITION_MARGIN), Some(styles::BG_ADDITION_LINE), Some(styles::BG_ADDITION_WORD))
+                (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()))
             } else if has_new_changes {
-                (Some(styles::BG_ADDITION_MARGIN), Some(styles::BG_ADDITION_LINE), Some(styles::BG_ADDITION_WORD))
+                (Some(styles::bg_addition_margin()), Some(styles::bg_addition_line()), Some(styles::bg_addition_word()))
             } else {
                 (None, None, None) // No background for context
             };
@@ -1725,11 +1726,11 @@ fn render_split_line(
             let mut spans = Vec::with_capacity(old_segments.len() + new_segments.len() + 8);
 
             // Left border and old line number
-            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
+            spans.push(Span::styled(styles::border_vertical(), border_style));
             let old_num_style = if let Some(bg) = old_margin_bg {
-                Style::default().fg(styles::FG_LINE_NUM).bg(bg)
+                Style::default().fg(styles::fg_line_num()).bg(bg)
             } else {
-                Style::default().fg(styles::FG_LINE_NUM)
+                Style::default().fg(styles::fg_line_num())
             };
             spans.push(Span::styled(old_num_str, old_num_style));
 
@@ -1775,9 +1776,9 @@ fn render_split_line(
 
             // New line number
             let new_num_style = if let Some(bg) = new_margin_bg {
-                Style::default().fg(styles::FG_LINE_NUM).bg(bg)
+                Style::default().fg(styles::fg_line_num()).bg(bg)
             } else {
-                Style::default().fg(styles::FG_LINE_NUM)
+                Style::default().fg(styles::fg_line_num())
             };
             spans.push(Span::styled(new_num_str, new_num_style));
 
@@ -1818,7 +1819,7 @@ fn render_split_line(
                 spans.push(Span::styled(" ".repeat(side_content_width - char_count), pad_style));
             }
 
-            spans.push(Span::styled(styles::BORDER_VERTICAL, border_style));
+            spans.push(Span::styled(styles::border_vertical(), border_style));
             Line::from(spans)
         }
         LineContent::Empty => {

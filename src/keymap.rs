@@ -25,6 +25,8 @@ pub enum Context {
     CommentFocused = 6,
     /// Help overlay is shown
     Help = 7,
+    /// Theme picker overlay is shown
+    ThemePicker = 8,
 }
 
 /// Categories for grouping keybindings in help display.
@@ -95,18 +97,21 @@ pub enum Action {
     DeleteComment,
 
     // Filter input
-    FilterAddChar(char),
     FilterBackspace,
 
     // General
     Refresh,
     ShowHelp,
     DismissHelp,
+    ToggleThemePicker,
     Quit,
 
     // Input mode
-    InputAddChar(char),
     InputBackspace,
+
+    // Theme picker
+    ApplyTheme,
+    CloseThemePicker,
 }
 
 /// A single key binding with optional context requirement.
@@ -140,10 +145,6 @@ impl KeyBinding {
         self
     }
 
-    pub fn with_shift(mut self) -> Self {
-        self.modifiers.shift = true;
-        self
-    }
 
     pub fn in_context(mut self, ctx: Context) -> Self {
         self.context = Some(ctx);
@@ -352,6 +353,7 @@ pub fn build_default_keymap() -> Keymap {
 
     // === General (shown in help) ===
     km.bind(ch('?', Action::ShowHelp).help(General, "Toggle help"));
+    km.bind(ch('t', Action::ToggleThemePicker).help(General, "Theme picker"));
     km.bind(ch('q', Action::Quit).help(General, "Quit"));
 
     // === Additional bindings (not shown in help - duplicates or internal) ===
@@ -400,6 +402,11 @@ pub fn build_default_keymap() -> Keymap {
     km.bind(ch('?', Action::DismissHelp).in_context(Context::Help));
     km.bind(ch('q', Action::DismissHelp).in_context(Context::Help));
     km.bind(key(KeyCode::Enter, Action::DismissHelp).in_context(Context::Help));
+
+    // === Theme picker mode ===
+    km.bind(key(KeyCode::Esc, Action::CloseThemePicker).in_context(Context::ThemePicker));
+    km.bind(ch('q', Action::CloseThemePicker).in_context(Context::ThemePicker));
+    km.bind(key(KeyCode::Enter, Action::ApplyTheme).in_context(Context::ThemePicker));
 
     // === Filter input mode ===
     km.bind(key(KeyCode::Esc, Action::CancelInput).in_context(Context::FilterInput));

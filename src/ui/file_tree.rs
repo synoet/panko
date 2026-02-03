@@ -41,9 +41,9 @@ impl ChangeType {
 
     pub fn style(&self) -> Style {
         match self {
-            ChangeType::Added => Style::default().fg(styles::FG_ADDITION),
-            ChangeType::Modified => Style::default().fg(styles::FG_HUNK),
-            ChangeType::Deleted => Style::default().fg(styles::FG_DELETION),
+            ChangeType::Added => Style::default().fg(styles::fg_addition()),
+            ChangeType::Modified => Style::default().fg(styles::fg_hunk()),
+            ChangeType::Deleted => Style::default().fg(styles::fg_deletion()),
         }
     }
 }
@@ -328,9 +328,9 @@ pub fn render(
 
     // Filter input with search icon
     let filter_border_color = if filter_focused {
-        styles::FG_PATH
+        styles::fg_path()
     } else {
-        styles::FG_BORDER
+        styles::fg_border()
     };
 
     let filter_text = if filter.is_empty() && !filter_focused {
@@ -340,18 +340,19 @@ pub fn render(
     };
 
     let filter_style = if filter_focused {
-        Style::default().fg(styles::FG_DEFAULT)
+        Style::default().fg(styles::fg_default())
     } else {
-        Style::default().fg(styles::FG_MUTED)
+        Style::default().fg(styles::fg_muted())
     };
 
     let filter_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(filter_border_color))
-        .title(Span::styled(" Files ", Style::default().fg(styles::FG_DEFAULT)));
+        .title(Span::styled(" Files ", Style::default().fg(styles::fg_default())))
+        .style(Style::default().bg(styles::bg_sidebar()));
 
     let filter_input = Paragraph::new(filter_text)
-        .style(filter_style)
+        .style(filter_style.bg(styles::bg_sidebar()))
         .block(filter_block);
     frame.render_widget(filter_input, chunks[0]);
 
@@ -370,18 +371,18 @@ pub fn render(
             if item.is_directory {
                 // Directory with expand/collapse icon
                 let icon = if item.is_expanded { "▾ " } else { "▸ " };
-                spans.push(Span::styled(icon, Style::default().fg(styles::FG_MUTED)));
+                spans.push(Span::styled(icon, Style::default().fg(styles::fg_muted())));
                 spans.push(Span::styled(
                     format!(" {}", item.name),
-                    Style::default().fg(styles::FG_DIRECTORY).add_modifier(Modifier::BOLD),
+                    Style::default().fg(styles::fg_directory()).add_modifier(Modifier::BOLD),
                 ));
             } else {
                 // File with viewed checkbox and change type dot
                 let checkbox = if is_viewed { "☑ " } else { "☐ " };
                 let checkbox_style = if is_viewed {
-                    Style::default().fg(styles::FG_ADDITION)
+                    Style::default().fg(styles::fg_addition())
                 } else {
-                    Style::default().fg(styles::FG_MUTED)
+                    Style::default().fg(styles::fg_muted())
                 };
                 spans.push(Span::styled(checkbox, checkbox_style));
 
@@ -391,11 +392,11 @@ pub fn render(
                 }
 
                 let file_style = if is_viewed {
-                    Style::default().fg(styles::FG_MUTED) // Dimmed when viewed
+                    Style::default().fg(styles::fg_muted()) // Dimmed when viewed
                 } else if is_current {
-                    Style::default().fg(styles::FG_DEFAULT).add_modifier(Modifier::BOLD)
+                    Style::default().fg(styles::fg_default()).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(styles::FG_DEFAULT)
+                    Style::default().fg(styles::fg_default())
                 };
                 spans.push(Span::styled(&item.name, file_style));
 
@@ -403,15 +404,15 @@ pub fn render(
                 if let Some(stats) = &item.stats {
                     spans.push(Span::styled(
                         format!(" +{} -{}", stats.additions, stats.deletions),
-                        Style::default().fg(styles::FG_MUTED),
+                        Style::default().fg(styles::fg_muted()),
                     ));
                 }
             }
 
             let style = if is_selected {
-                Style::default().bg(styles::BG_SELECTED)
+                Style::default().bg(styles::bg_selected())
             } else if is_current && !item.is_directory {
-                Style::default().bg(styles::BG_HOVER)
+                Style::default().bg(styles::bg_hover())
             } else {
                 Style::default()
             };
@@ -424,12 +425,14 @@ pub fn render(
 
     let tree_block = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(styles::FG_BORDER))
-        .padding(Padding::new(1, 0, 0, 0));
+        .border_style(Style::default().fg(styles::fg_border()))
+        .padding(Padding::new(1, 0, 0, 0))
+        .style(Style::default().bg(styles::bg_sidebar()));
 
     let list = List::new(items)
         .block(tree_block)
-        .highlight_style(Style::default().bg(styles::BG_SELECTED));
+        .style(Style::default().bg(styles::bg_sidebar()))
+        .highlight_style(Style::default().bg(styles::bg_selected()));
 
     frame.render_stateful_widget(list, chunks[1], list_state);
 }

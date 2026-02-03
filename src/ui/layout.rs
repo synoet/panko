@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, ListState, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph},
     Frame,
 };
 use std::collections::HashSet;
@@ -47,6 +47,12 @@ pub fn render_main(
     focus: Focus,
     mode: ViewMode,
 ) {
+    // Fill the full background so theme colors apply consistently.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(styles::bg_default())),
+        area,
+    );
+
     // Split into header, main content, and status bar
     let vertical_chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
@@ -235,7 +241,7 @@ fn render_status_bar(
         !sidebar_collapsed,
     );
 
-    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::FG_BORDER)));
+    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
 
     // Split/unified view toggle (s)
     add_toggle_icon(
@@ -255,7 +261,7 @@ fn render_status_bar(
         show_comments,
     );
 
-    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::FG_BORDER)));
+    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
 
     // Filter indicator
     let filter_active = !filter.is_empty();
@@ -287,23 +293,23 @@ fn render_status_bar(
 
         center_spans.push(Span::styled(
             format!(" {} ", icon),
-            Style::default().fg(styles::FG_HUNK),
+            Style::default().fg(styles::fg_hunk()),
         ));
         center_spans.push(Span::styled(
             format!("[{}]", selection_info),
-            Style::default().fg(styles::FG_DEFAULT),
+            Style::default().fg(styles::fg_default()),
         ));
         center_spans.push(Span::styled(
             format!("  {}", hint),
-            Style::default().fg(styles::FG_MUTED),
+            Style::default().fg(styles::fg_muted()),
         ));
     }
 
     // Right side: help and quit
-    right_spans.push(Span::styled("?", Style::default().fg(styles::FG_MUTED)));
-    right_spans.push(Span::styled(" Help ", Style::default().fg(styles::FG_MUTED)));
-    right_spans.push(Span::styled("q", Style::default().fg(styles::FG_MUTED)));
-    right_spans.push(Span::styled(" Quit ", Style::default().fg(styles::FG_MUTED)));
+    right_spans.push(Span::styled("?", Style::default().fg(styles::fg_muted())));
+    right_spans.push(Span::styled(" Help ", Style::default().fg(styles::fg_muted())));
+    right_spans.push(Span::styled("q", Style::default().fg(styles::fg_muted())));
+    right_spans.push(Span::styled(" Quit ", Style::default().fg(styles::fg_muted())));
 
     // Calculate padding to center the center_spans
     let left_width: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
@@ -328,71 +334,23 @@ fn render_status_bar(
     // Top border line
     let border_line = Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(styles::FG_BORDER),
+        Style::default().fg(styles::fg_border()).bg(styles::bg_header()),
     ));
 
     let status_line = Line::from(spans);
-    let para = Paragraph::new(vec![border_line, status_line]);
+    let para = Paragraph::new(vec![border_line, status_line])
+        .style(Style::default().bg(styles::bg_header()));
     frame.render_widget(para, area);
 }
 
 /// Add a toggle icon with label and hotkey.
 fn add_toggle_icon(spans: &mut Vec<Span<'static>>, icon: &'static str, label: &str, key: &'static str, active: bool) {
-    let fg = if active { styles::FG_DEFAULT } else { styles::FG_MUTED };
+    let fg = if active { styles::fg_default() } else { styles::fg_muted() };
 
     spans.push(Span::styled(format!(" {}", icon), Style::default().fg(fg)));
     spans.push(Span::styled(format!(" {}", label), Style::default().fg(fg)));
-    spans.push(Span::styled(format!(" {}", key), Style::default().fg(styles::FG_BORDER)));
+    spans.push(Span::styled(format!(" {}", key), Style::default().fg(styles::fg_border())));
     spans.push(Span::raw(" "));
-}
-
-/// Render comment input overlay.
-pub fn render_comment_input(
-    frame: &mut Frame,
-    area: Rect,
-    comment_text: &str,
-    selection: Option<(usize, usize)>,
-) {
-    let popup_area = centered_rect(60, 30, area);
-
-    frame.render_widget(Clear, popup_area);
-
-    let selection_info = selection
-        .map(|(start, end)| {
-            if start == end {
-                format!("Line {}", start + 1)
-            } else {
-                format!("Lines {}-{}", start + 1, end + 1)
-            }
-        })
-        .unwrap_or_default();
-
-    let title = format!(" Add comment ({}) ", selection_info);
-
-    let input_lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(comment_text, Style::default().fg(styles::FG_DEFAULT)),
-            Span::styled("█", Style::default().fg(styles::FG_HUNK)), // Cursor
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Enter to submit, Esc to cancel",
-            styles::style_muted(),
-        )),
-    ];
-
-    let input = Paragraph::new(input_lines).block(
-        Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(styles::FG_HUNK))
-            .padding(Padding::uniform(1))
-            .style(Style::default().bg(styles::BG_SIDEBAR)),
-    );
-
-    frame.render_widget(input, popup_area);
 }
 
 /// Render the global header spanning full width.
@@ -415,32 +373,32 @@ fn render_global_header(
     // Left side: title and summary
     let mut left_spans = vec![
         Span::styled(" ", Style::default()),
-        Span::styled(branch, Style::default().fg(styles::FG_PATH).add_modifier(Modifier::BOLD)),
-        Span::styled(" → ", Style::default().fg(styles::FG_MUTED)),
-        Span::styled(base, Style::default().fg(styles::FG_MUTED)),
+        Span::styled(branch, Style::default().fg(styles::fg_path()).add_modifier(Modifier::BOLD)),
+        Span::styled(" → ", Style::default().fg(styles::fg_muted())),
+        Span::styled(base, Style::default().fg(styles::fg_muted())),
         Span::styled("  ", Style::default()),
-        Span::styled(format!("{} files", file_count), Style::default().fg(styles::FG_MUTED)),
+        Span::styled(format!("{} files", file_count), Style::default().fg(styles::fg_muted())),
         Span::styled("  ", Style::default()),
         Span::styled(format!("+{}", stats.additions), styles::style_stat_addition()),
         Span::styled(" ", Style::default()),
         Span::styled(format!("-{}", stats.deletions), styles::style_stat_deletion()),
         Span::styled("  ", Style::default()),
-        Span::styled("✓", Style::default().fg(styles::FG_ADDITION)),
-        Span::styled(format!(" {}/{}", viewed_count, file_count), Style::default().fg(styles::FG_MUTED)),
+        Span::styled("✓", Style::default().fg(styles::fg_addition())),
+        Span::styled(format!(" {}/{}", viewed_count, file_count), Style::default().fg(styles::fg_muted())),
     ];
 
     // Show refresh indicator if there are pending changes
     if has_pending_changes {
         left_spans.push(Span::styled("  ", Style::default()));
-        left_spans.push(Span::styled("●", Style::default().fg(styles::FG_WARNING)));
-        left_spans.push(Span::styled(" changed", Style::default().fg(styles::FG_WARNING)));
+        left_spans.push(Span::styled("●", Style::default().fg(styles::fg_warning())));
+        left_spans.push(Span::styled(" changed", Style::default().fg(styles::fg_warning())));
     }
 
     // Right side: diff source toggle
     let mut right_spans = Vec::new();
 
     // Display mode selector
-    right_spans.push(Span::styled("u ", Style::default().fg(styles::FG_BORDER)));
+    right_spans.push(Span::styled("u ", Style::default().fg(styles::fg_border())));
 
     let sources = [
         ("Committed", DiffSource::Committed),
@@ -451,13 +409,13 @@ fn render_global_header(
     for (i, (label, source)) in sources.iter().enumerate() {
         let is_active = diff_source == *source;
         let style = if is_active {
-            Style::default().fg(styles::FG_DEFAULT).add_modifier(Modifier::BOLD)
+            Style::default().fg(styles::fg_default()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(styles::FG_MUTED)
+            Style::default().fg(styles::fg_muted())
         };
 
         if i > 0 {
-            right_spans.push(Span::styled(" │ ", Style::default().fg(styles::FG_BORDER)));
+            right_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
         }
         right_spans.push(Span::styled(*label, style));
     }
@@ -477,10 +435,11 @@ fn render_global_header(
     let header_line = Line::from(spans);
     let border_line = Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(styles::FG_BORDER),
+        Style::default().fg(styles::fg_border()).bg(styles::bg_header()),
     ));
 
-    let header = Paragraph::new(vec![header_line, border_line]);
+    let header = Paragraph::new(vec![header_line, border_line])
+        .style(Style::default().bg(styles::bg_header()));
     frame.render_widget(header, area);
 }
 
@@ -495,7 +454,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, keymap: &Keymap) {
         Line::from(Span::styled(
             "  Keyboard Shortcuts",
             Style::default()
-                .fg(styles::FG_DEFAULT)
+                .fg(styles::fg_default())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )),
         Line::from(""),
@@ -523,7 +482,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, keymap: &Keymap) {
             let key_col = format!("{:<14}", key_col);
 
             help_text.push(Line::from(vec![
-                Span::styled(key_col, Style::default().fg(styles::FG_ADDITION)),
+                Span::styled(key_col, Style::default().fg(styles::fg_addition())),
                 Span::raw(entry.description),
             ]));
         }
@@ -540,12 +499,69 @@ pub fn render_help(frame: &mut Frame, area: Rect, keymap: &Keymap) {
         Block::default()
             .title(" Help ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(styles::FG_MUTED))
+            .border_style(Style::default().fg(styles::fg_muted()))
             .padding(Padding::uniform(1))
-            .style(Style::default().bg(styles::BG_SIDEBAR)),
+            .style(Style::default().bg(styles::bg_sidebar())),
     );
 
     frame.render_widget(help, popup_area);
+}
+
+/// Render the theme picker overlay.
+pub fn render_theme_picker(
+    frame: &mut Frame,
+    area: Rect,
+    themes: &[String],
+    selected: usize,
+) {
+    let popup_area = centered_rect(45, 50, area);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Themes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(styles::fg_muted()))
+        .style(Style::default().bg(styles::bg_sidebar()));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let items: Vec<ListItem> = themes
+        .iter()
+        .map(|name| {
+            ListItem::new(Line::from(Span::styled(
+                format!(" {}", name),
+                Style::default().fg(styles::fg_default()),
+            )))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .style(Style::default().bg(styles::bg_sidebar()))
+        .highlight_style(
+            Style::default()
+                .bg(styles::bg_selected())
+                .fg(styles::fg_default())
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let mut state = ListState::default();
+    if !themes.is_empty() {
+        state.select(Some(selected.min(themes.len() - 1)));
+    }
+
+    frame.render_stateful_widget(list, chunks[0], &mut state);
+
+    let hint_area = chunks[1];
+    let hint = Paragraph::new(Line::from(Span::styled(
+        " Enter apply │ Esc cancel",
+        styles::style_muted(),
+    )));
+    frame.render_widget(hint, hint_area);
 }
 
 /// Render an empty state.
@@ -554,7 +570,7 @@ pub fn render_empty(frame: &mut Frame, area: Rect, message: &str, branch: &str, 
         Line::from(""),
         Line::from(Span::styled(
             format!("  {} → {}", branch, base),
-            Style::default().fg(styles::FG_DEFAULT),
+            Style::default().fg(styles::fg_default()),
         )),
         Line::from(""),
         Line::from(Span::styled(format!("  {}", message), styles::style_muted())),

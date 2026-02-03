@@ -63,12 +63,6 @@ impl NotifyFileWatcher {
 }
 
 impl FileWatcher for NotifyFileWatcher {
-    fn events(&self) -> Option<Receiver<FileEvent>> {
-        // Can't clone receiver, so return None.
-        // Use has_changes() instead for polling.
-        None
-    }
-
     fn has_changes(&self) -> bool {
         // Also drain any pending events to prevent channel from filling up
         while self.event_rx.try_recv().is_ok() {}
@@ -79,10 +73,5 @@ impl FileWatcher for NotifyFileWatcher {
         self.has_changes.store(false, Ordering::SeqCst);
         // Drain any pending events
         while self.event_rx.try_recv().is_ok() {}
-    }
-
-    fn stop(&mut self) -> Result<()> {
-        // Watcher is stopped when dropped
-        Ok(())
     }
 }

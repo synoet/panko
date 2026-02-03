@@ -14,6 +14,7 @@ use adapters::{CrosstermTerminal, Git2Repo, NotifyFileWatcher, SqliteStateStore}
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ports::{GitRepo, StateStore};
+use ui::theme;
 use crossterm::{
     event::DisableMouseCapture,
     execute,
@@ -35,6 +36,10 @@ struct Args {
     /// Path to git repository (default: current directory)
     #[arg(short, long, global = true)]
     path: Option<String>,
+
+    /// Theme name (e.g. github-dark, github-light)
+    #[arg(long, global = true)]
+    theme: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -118,6 +123,8 @@ enum Command {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    theme::init_from_env_and_arg(args.theme.as_deref())
+        .map_err(|err| anyhow::anyhow!(err))?;
 
     // Open git repo
     let git = if let Some(path) = &args.path {

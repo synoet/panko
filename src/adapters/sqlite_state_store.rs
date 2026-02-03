@@ -157,33 +157,6 @@ impl StateStore for SqliteStateStore {
         Ok(files)
     }
 
-    fn get_viewed_at(&self, repo_path: &str, branch: &str, file_path: &str) -> Result<Option<i64>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT viewed_at FROM viewed_files
-             WHERE repo_path = ?1 AND branch = ?2 AND file_path = ?3"
-        )?;
-
-        let result = stmt.query_row((repo_path, branch, file_path), |row| {
-            row.get(0)
-        });
-
-        match result {
-            Ok(ts) => Ok(Some(ts)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn clear_viewed(&self, repo_path: &str, branch: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM viewed_files WHERE repo_path = ?1 AND branch = ?2",
-            (repo_path, branch),
-        )?;
-        Ok(())
-    }
-
     // ─── Comment methods ───
 
     fn add_comment(&self, repo_path: &str, branch: &str, comment: NewComment) -> Result<i64> {
@@ -245,48 +218,6 @@ impl StateStore for SqliteStateStore {
         Ok(comments)
     }
 
-    fn get_comments_for_file(
-        &self,
-        repo_path: &str,
-        branch: &str,
-        file_path: &str,
-    ) -> Result<Vec<Comment>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, file_path, start_line, end_line, body, author, created_at, resolved, resolved_at
-             FROM comments
-             WHERE repo_path = ?1 AND branch = ?2 AND file_path = ?3
-             ORDER BY start_line"
-        )?;
-
-        let mut comments: Vec<Comment> = stmt
-            .query_map((repo_path, branch, file_path), |row| {
-                Ok(Comment {
-                    id: row.get(0)?,
-                    file_path: row.get(1)?,
-                    start_line: row.get::<_, i64>(2)? as usize,
-                    end_line: row.get::<_, i64>(3)? as usize,
-                    body: row.get(4)?,
-                    author: row.get(5)?,
-                    created_at: row.get(6)?,
-                    resolved: row.get::<_, i64>(7)? != 0,
-                    resolved_at: row.get(8)?,
-                    replies: vec![],
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        drop(stmt);
-
-        // Load replies for each comment
-        for comment in &mut comments {
-            comment.replies = Self::load_replies(&conn, comment.id)?;
-        }
-
-        Ok(comments)
-    }
-
     fn resolve_comment(&self, comment_id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -311,15 +242,6 @@ impl StateStore for SqliteStateStore {
         Ok(())
     }
 
-    fn update_comment(&self, comment_id: i64, body: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE comments SET body = ?1 WHERE id = ?2",
-            (body, comment_id),
-        )?;
-        Ok(())
-    }
-
     // ─── Reply methods ───
 
     fn add_reply(&self, reply: NewReply) -> Result<i64> {
@@ -332,14 +254,4 @@ impl StateStore for SqliteStateStore {
         Ok(conn.last_insert_rowid())
     }
 
-    fn get_replies(&self, comment_id: i64) -> Result<Vec<Reply>> {
-        let conn = self.conn.lock().unwrap();
-        Self::load_replies(&conn, comment_id)
-    }
-
-    fn delete_reply(&self, reply_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM replies WHERE id = ?1", (reply_id,))?;
-        Ok(())
-    }
 }

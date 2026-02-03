@@ -6,7 +6,7 @@ use crate::ports::{
     FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, NewReply, StateStore,
     Terminal, TerminalEvent,
 };
-use crate::ui::{diff_view, file_tree, layout};
+use crate::ui::{diff_view, file_tree, layout, theme};
 use anyhow::Result;
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, HashSet};
@@ -19,6 +19,7 @@ pub enum ViewMode {
     #[default]
     Normal,
     Help,
+    ThemePicker,
     /// Visual mode for selecting lines to comment on
     Visual,
     /// Inputting a comment
@@ -106,6 +107,9 @@ pub struct App {
     pub viewport_height: usize,
     /// Keymap for handling key bindings with context-based dispatch
     keymap: Keymap,
+    /// Theme picker state
+    theme_picker_items: Vec<String>,
+    theme_picker_index: usize,
 }
 
 impl App {
@@ -190,6 +194,8 @@ impl App {
             reply_to_comment_id: None,
             viewport_height: 30, // Default, updated during render
             keymap: build_default_keymap(),
+            theme_picker_items: Vec::new(),
+            theme_picker_index: 0,
         })
     }
 
@@ -475,6 +481,14 @@ impl App {
             if mode == ViewMode::Help {
                 layout::render_help(frame, area, &self.keymap);
             }
+            if mode == ViewMode::ThemePicker {
+                layout::render_theme_picker(
+                    frame,
+                    area,
+                    &self.theme_picker_items,
+                    self.theme_picker_index,
+                );
+            }
             // Note: Visual mode and CommentInput are shown in the status bar
         })
     }
@@ -539,6 +553,7 @@ impl App {
         // Add mode-based contexts (more specific than focus)
         match self.mode {
             ViewMode::Help => contexts.push(Context::Help),
+            ViewMode::ThemePicker => contexts.push(Context::ThemePicker),
             ViewMode::Visual => contexts.push(Context::Visual),
             ViewMode::CommentInput => contexts.push(Context::CommentInput),
             ViewMode::Normal => {}
@@ -556,14 +571,12 @@ impl App {
         // Handle character input specially for text input modes
         if let KeyCode::Char(c) = code {
             if !modifiers.ctrl {
-                match self.mode {
-                    ViewMode::CommentInput => {
-                        self.comment_input.push(c);
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-                if self.focus == Focus::FilterInput {
+                if self.mode == ViewMode::ThemePicker {
+                    // Ignore text input while theme picker is open
+                } else if self.mode == ViewMode::CommentInput {
+                    self.comment_input.push(c);
+                    return Ok(());
+                } else if self.focus == Focus::FilterInput {
                     self.filter.push(c);
                     self.rebuild_flat_items();
                     return Ok(());
@@ -586,6 +599,36 @@ impl App {
     fn dispatch_action(&mut self, action: Action, git: &dyn GitRepo) -> Result<()> {
         let max_line = self.diff_lines.len().saturating_sub(1);
         let file_count = self.diff.files.len();
+
+        if self.mode == ViewMode::ThemePicker {
+            let len = self.theme_picker_items.len();
+            match action {
+                Action::MoveDown => {
+                    if self.theme_picker_index + 1 < len {
+                        self.theme_picker_index += 1;
+                    }
+                }
+                Action::MoveUp => {
+                    self.theme_picker_index = self.theme_picker_index.saturating_sub(1);
+                }
+                Action::GotoTop => {
+                    self.theme_picker_index = 0;
+                }
+                Action::GotoBottom => {
+                    if len > 0 {
+                        self.theme_picker_index = len - 1;
+                    }
+                }
+                Action::ApplyTheme => {
+                    self.apply_theme_selection();
+                }
+                Action::CloseThemePicker | Action::ToggleThemePicker => {
+                    self.close_theme_picker();
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
 
         match action {
             // === Navigation ===
@@ -866,12 +909,15 @@ impl App {
             Action::DismissHelp => {
                 self.mode = ViewMode::Normal;
             }
+            Action::ToggleThemePicker => {
+                self.open_theme_picker();
+            }
+            Action::ApplyTheme | Action::CloseThemePicker => {}
             Action::Quit => {
                 self.should_quit = true;
             }
 
             // These are handled specially in handle_key
-            Action::FilterAddChar(_) | Action::InputAddChar(_) => {}
         }
 
         Ok(())
@@ -895,6 +941,36 @@ impl App {
         self.mode = ViewMode::Normal;
         self.visual_anchor = None;
         self.comment_file_path = None;
+    }
+
+    fn open_theme_picker(&mut self) {
+        let current = theme::current_name();
+        self.rebuild_theme_picker_list(Some(&current));
+        self.mode = ViewMode::ThemePicker;
+    }
+
+    fn close_theme_picker(&mut self) {
+        self.mode = ViewMode::Normal;
+    }
+
+    fn apply_theme_selection(&mut self) {
+        if let Some(name) = self.theme_picker_items.get(self.theme_picker_index) {
+            if theme::set_theme_and_persist(name).is_ok() {
+                self.rebuild_diff_lines();
+            }
+        }
+        self.mode = ViewMode::Normal;
+    }
+
+    fn rebuild_theme_picker_list(&mut self, preserve: Option<&str>) {
+        self.theme_picker_items = theme::build_theme_list();
+        if let Some(name) = preserve {
+            if let Some(idx) = self.theme_picker_items.iter().position(|n| n == name) {
+                self.theme_picker_index = idx;
+                return;
+            }
+        }
+        self.theme_picker_index = 0;
     }
 
     /// Get the visual selection range (start_line, end_line) sorted.
