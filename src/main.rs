@@ -46,8 +46,24 @@ struct Args {
     command: Option<Command>,
 }
 
+#[derive(Subcommand, Debug, Clone)]
+enum InitTarget {
+    /// Set up Claude Code integration (.claude/skills + settings.json)
+    Claude,
+    /// Set up OpenAI Codex integration (AGENTS.md)
+    Codex,
+    /// Set up OpenCode integration (AGENTS.md)
+    Opencode,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Initialize panko integration for AI coding tools
+    Init {
+        #[command(subcommand)]
+        target: InitTarget,
+    },
+
     /// List all comments for the current branch (for AI agents)
     Comments {
         /// Output format: text (default) or json
@@ -184,6 +200,12 @@ fn main() -> Result<()> {
 
 /// Run CLI commands (for AI agents)
 fn run_cli_command(command: Command, git: &dyn GitRepo) -> Result<()> {
+    // Handle init command separately (doesn't need branch/state)
+    if let Command::Init { target } = command {
+        let workdir = git.workdir()?;
+        return run_init_command(target, &workdir);
+    }
+
     let state_store = SqliteStateStore::new()
         .context("Failed to initialize state store")?;
 
@@ -191,6 +213,8 @@ fn run_cli_command(command: Command, git: &dyn GitRepo) -> Result<()> {
     let branch = git.current_branch()?;
 
     match command {
+        Command::Init { .. } => unreachable!(),
+
         Command::Comments { format, status } => {
             let comments = state_store.get_comments(&repo_path, &branch)?;
 
@@ -447,3 +471,185 @@ fn print_comment_json(comment: &domain::Comment) {
         replies_json.join(",\n"),
     );
 }
+
+// ─── Init command ───────────────────────────────────────────────────────────
+
+fn run_init_command(target: InitTarget, workdir: &Path) -> Result<()> {
+    match target {
+        InitTarget::Claude => init_claude(workdir),
+        InitTarget::Codex => init_codex(workdir),
+        InitTarget::Opencode => init_opencode(workdir),
+    }
+}
+
+fn init_claude(workdir: &Path) -> Result<()> {
+    use std::fs;
+
+    let claude_dir = workdir.join(".claude");
+    let skills_dir = claude_dir.join("skills");
+
+    // Create directories
+    fs::create_dir_all(&skills_dir)
+        .context("Failed to create .claude/skills directory")?;
+
+    // Write skill file
+    let skill_path = skills_dir.join("panko.md");
+    fs::write(&skill_path, CLAUDE_SKILL_CONTENT)
+        .context("Failed to write skill file")?;
+    println!("Created {}", skill_path.display());
+
+    // Write or merge settings.json
+    let settings_path = claude_dir.join("settings.json");
+    if settings_path.exists() {
+        println!("Note: {} already exists - add these permissions manually:", settings_path.display());
+        println!("{}", CLAUDE_SETTINGS_PERMISSIONS);
+    } else {
+        fs::write(&settings_path, CLAUDE_SETTINGS_CONTENT)
+            .context("Failed to write settings file")?;
+        println!("Created {}", settings_path.display());
+    }
+
+    println!("\nClaude Code integration ready. Use /panko to address review comments.");
+    Ok(())
+}
+
+fn init_codex(workdir: &Path) -> Result<()> {
+    init_agents_md(workdir, "Codex")
+}
+
+fn init_opencode(workdir: &Path) -> Result<()> {
+    init_agents_md(workdir, "OpenCode")
+}
+
+fn init_agents_md(workdir: &Path, tool_name: &str) -> Result<()> {
+    use std::fs;
+
+    let agents_path = workdir.join("AGENTS.md");
+
+    if agents_path.exists() {
+        // Check if panko section already exists
+        let content = fs::read_to_string(&agents_path)
+            .context("Failed to read existing AGENTS.md")?;
+
+        if content.contains("## panko") || content.contains("## Panko") {
+            println!("AGENTS.md already contains panko instructions.");
+            return Ok(());
+        }
+
+        // Append panko section
+        let new_content = format!("{}\n\n{}", content.trim_end(), AGENTS_MD_SECTION);
+        fs::write(&agents_path, new_content)
+            .context("Failed to update AGENTS.md")?;
+        println!("Added panko section to {}", agents_path.display());
+    } else {
+        // Create new file
+        fs::write(&agents_path, AGENTS_MD_CONTENT)
+            .context("Failed to write AGENTS.md")?;
+        println!("Created {}", agents_path.display());
+    }
+
+    println!("\n{} integration ready.", tool_name);
+    Ok(())
+}
+
+const CLAUDE_SKILL_CONTENT: &str = r#"# panko - Code Review Comments
+
+Manages code review comments via the panko CLI. Use when the user asks to check, address, resolve, or reply to review comments on the current branch.
+
+## Commands
+
+```bash
+panko comments                      # List all comments
+panko comments --status open        # List unresolved comments
+panko comments --format json        # JSON output for parsing
+
+panko show <id>                     # Show a specific comment thread
+panko resolve <id>                  # Mark comment as resolved
+panko unresolve <id>                # Reopen a resolved comment
+panko reply <id> --message "text"   # Reply to a comment
+panko delete <id>                   # Delete a comment
+
+panko comment <file> <start> <end> --message "text"  # Add new comment
+```
+
+## Workflow
+
+When addressing review comments:
+
+1. List open comments: `panko comments --status open`
+2. Read and understand each comment
+3. Make the code changes
+4. Reply explaining what you did: `panko reply <id> --message "Fixed by..."`
+5. Resolve: `panko resolve <id>`
+
+## Notes
+
+- Comments are scoped to repo + branch
+- Line numbers refer to source file lines (new/right side of diff)
+- The `--author` flag identifies the commenter (defaults to git user)
+"#;
+
+const CLAUDE_SETTINGS_CONTENT: &str = r#"{
+  "permissions": {
+    "allow": [
+      "Bash(panko comments*)",
+      "Bash(panko show*)",
+      "Bash(panko resolve*)",
+      "Bash(panko unresolve*)",
+      "Bash(panko reply*)",
+      "Bash(panko comment*)",
+      "Bash(panko delete*)"
+    ]
+  }
+}
+"#;
+
+const CLAUDE_SETTINGS_PERMISSIONS: &str = r#"  "permissions": {
+    "allow": [
+      "Bash(panko comments*)",
+      "Bash(panko show*)",
+      "Bash(panko resolve*)",
+      "Bash(panko unresolve*)",
+      "Bash(panko reply*)",
+      "Bash(panko comment*)",
+      "Bash(panko delete*)"
+    ]
+  }"#;
+
+const AGENTS_MD_SECTION: &str = r#"## panko - Code Review Comments
+
+This project uses `panko` for code review comments. Use these commands to manage review feedback:
+
+```bash
+panko comments                      # List all comments
+panko comments --status open        # List unresolved comments
+panko resolve <id>                  # Mark comment as resolved
+panko reply <id> --message "text"   # Reply to a comment
+```
+
+When addressing review comments:
+1. List open comments: `panko comments --status open`
+2. Make the code changes to address each comment
+3. Reply explaining what you did: `panko reply <id> --message "Fixed by..."`
+4. Resolve: `panko resolve <id>`
+"#;
+
+const AGENTS_MD_CONTENT: &str = r#"# Project Instructions
+
+## panko - Code Review Comments
+
+This project uses `panko` for code review comments. Use these commands to manage review feedback:
+
+```bash
+panko comments                      # List all comments
+panko comments --status open        # List unresolved comments
+panko resolve <id>                  # Mark comment as resolved
+panko reply <id> --message "text"   # Reply to a comment
+```
+
+When addressing review comments:
+1. List open comments: `panko comments --status open`
+2. Make the code changes to address each comment
+3. Reply explaining what you did: `panko reply <id> --message "Fixed by..."`
+4. Resolve: `panko resolve <id>`
+"#;
