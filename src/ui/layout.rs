@@ -53,13 +53,12 @@ pub fn render_main(
         area,
     );
 
-    // Split into header, main content, and status bar
+    // Split into header and main content
     let vertical_chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // Header (reduced)
+            Constraint::Length(2),  // Header
             Constraint::Min(1),     // Content
-            Constraint::Length(2),  // Status bar (border + content)
         ])
         .split(area);
 
@@ -68,12 +67,18 @@ pub fn render_main(
 
     if sidebar_collapsed {
         // Full-width diff view when sidebar is collapsed
+        // Split to include panel bottom bar
+        let diff_chunks = Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(vertical_chunks[1]);
+
         // Add horizontal padding
         let padded_area = Rect {
-            x: vertical_chunks[1].x + 2,
-            y: vertical_chunks[1].y,
-            width: vertical_chunks[1].width.saturating_sub(4),
-            height: vertical_chunks[1].height,
+            x: diff_chunks[0].x + 2,
+            y: diff_chunks[0].y,
+            width: diff_chunks[0].width.saturating_sub(4),
+            height: diff_chunks[0].height,
         };
 
         match view_mode {
@@ -122,6 +127,9 @@ pub fn render_main(
                 );
             }
         }
+
+        // Render diff hints bar at bottom
+        render_diff_hints(frame, diff_chunks[1], true, view_mode, show_comments, mode, visual_selection);
     } else {
         // Split main area into sidebar and content
         let sidebar_width = 40.min(vertical_chunks[1].width / 3);
@@ -142,14 +150,21 @@ pub fn render_main(
             filter,
             filter_focused,
             tree_state,
+            focus == Focus::FileTree,
         );
+
+        // Split diff area to include panel bottom bar
+        let diff_chunks = Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(horizontal_chunks[1]);
 
         // Add horizontal padding to diff area
         let diff_area = Rect {
-            x: horizontal_chunks[1].x + 1,
-            y: horizontal_chunks[1].y,
-            width: horizontal_chunks[1].width.saturating_sub(2),
-            height: horizontal_chunks[1].height,
+            x: diff_chunks[0].x + 1,
+            y: diff_chunks[0].y,
+            width: diff_chunks[0].width.saturating_sub(2),
+            height: diff_chunks[0].height,
         };
 
         // Render diff view
@@ -199,82 +214,57 @@ pub fn render_main(
                 );
             }
         }
-    }
 
-    // Render status bar at the bottom
-    render_status_bar(
-        frame,
-        vertical_chunks[2],
-        focus,
-        sidebar_collapsed,
-        show_comments,
-        view_mode,
-        filter,
-        mode,
-        visual_selection,
-    );
+        // Render diff hints bar at bottom
+        render_diff_hints(frame, diff_chunks[1], focus == Focus::DiffView, view_mode, show_comments, mode, visual_selection);
+    }
 }
 
-/// Render Zed-style status bar with icon toggles.
+/// Render panel bottom bar for the diff view.
 #[allow(clippy::too_many_arguments)]
-fn render_status_bar(
+fn render_diff_hints(
     frame: &mut Frame,
     area: Rect,
-    _focus: Focus,
-    sidebar_collapsed: bool,
-    show_comments: bool,
+    focused: bool,
     view_mode: diff_view::DiffViewMode,
-    filter: &str,
+    show_comments: bool,
     mode: ViewMode,
     visual_selection: Option<(usize, usize)>,
 ) {
-    let mut left_spans = Vec::new();
-    let mut center_spans = Vec::new();
-    let mut right_spans = Vec::new();
+    let border_color = if focused {
+        styles::fg_hunk()
+    } else {
+        styles::fg_border()
+    };
+    let hint_style = Style::default().fg(styles::fg_muted());
+    let key_style = Style::default().fg(if focused { styles::fg_default() } else { styles::fg_muted() });
+    let focus_style = if focused {
+        Style::default().fg(styles::fg_hunk()).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(styles::fg_muted())
+    };
 
-    // Left side: toggle icons
-    // Files/sidebar toggle (b)
-    add_toggle_icon(
-        &mut left_spans,
-        "≡",
-        "Files",
-        "b",
-        !sidebar_collapsed,
-    );
+    // Split toggle
+    let split_active = view_mode == diff_view::DiffViewMode::Split;
+    let split_fg = if split_active { styles::fg_default() } else { styles::fg_muted() };
 
-    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
+    // Comments toggle
+    let comments_fg = if show_comments { styles::fg_default() } else { styles::fg_muted() };
 
-    // Split/unified view toggle (s)
-    add_toggle_icon(
-        &mut left_spans,
-        "◫",
-        "Split",
-        "s",
-        view_mode == diff_view::DiffViewMode::Split,
-    );
+    // Build left spans
+    let mut left_spans = vec![
+        Span::styled(" 2", focus_style),
+        Span::styled(" │ ", Style::default().fg(styles::fg_border())),
+        Span::styled("◫", Style::default().fg(split_fg)),
+        Span::styled(" Split ", Style::default().fg(split_fg)),
+        Span::styled("s", Style::default().fg(styles::fg_border())),
+        Span::styled(" │ ", Style::default().fg(styles::fg_border())),
+        Span::styled("◇", Style::default().fg(comments_fg)),
+        Span::styled(" Comments ", Style::default().fg(comments_fg)),
+        Span::styled("C", Style::default().fg(styles::fg_border())),
+    ];
 
-    // Comments toggle (C)
-    add_toggle_icon(
-        &mut left_spans,
-        "◇",
-        "Comments",
-        "C",
-        show_comments,
-    );
-
-    left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
-
-    // Filter indicator
-    let filter_active = !filter.is_empty();
-    add_toggle_icon(
-        &mut left_spans,
-        "⌕",
-        if filter_active { filter } else { "Filter" },
-        "/",
-        filter_active,
-    );
-
-    // Center: Visual/Comment mode indicator (minimal)
+    // Show visual mode indicator if active
     if mode == ViewMode::Visual || mode == ViewMode::CommentInput {
         let selection_info = visual_selection
             .map(|(start, end)| {
@@ -292,68 +282,52 @@ fn render_status_bar(
             ("▋", "c comment  Esc ✗")
         };
 
-        center_spans.push(Span::styled(
-            format!(" {} ", icon),
-            Style::default().fg(styles::fg_hunk()),
-        ));
-        center_spans.push(Span::styled(
-            format!("[{}]", selection_info),
-            Style::default().fg(styles::fg_default()),
-        ));
-        center_spans.push(Span::styled(
-            format!("  {}", hint),
-            Style::default().fg(styles::fg_muted()),
-        ));
+        left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
+        left_spans.push(Span::styled(format!("{} ", icon), Style::default().fg(styles::fg_hunk())));
+        left_spans.push(Span::styled(format!("[{}] ", selection_info), Style::default().fg(styles::fg_default())));
+        left_spans.push(Span::styled(hint, Style::default().fg(styles::fg_muted())));
+    } else {
+        // Normal hints when not in visual mode
+        left_spans.push(Span::styled(" │ ", Style::default().fg(styles::fg_border())));
+        left_spans.push(Span::styled("/", key_style));
+        left_spans.push(Span::styled(" Search ", hint_style));
+        left_spans.push(Span::styled("v", key_style));
+        left_spans.push(Span::styled(" Select ", hint_style));
+        left_spans.push(Span::styled("n/p", key_style));
+        left_spans.push(Span::styled(" File ", hint_style));
     }
 
     // Right side: help and quit
-    right_spans.push(Span::styled("?", Style::default().fg(styles::fg_muted())));
-    right_spans.push(Span::styled(" Help ", Style::default().fg(styles::fg_muted())));
-    right_spans.push(Span::styled("q", Style::default().fg(styles::fg_muted())));
-    right_spans.push(Span::styled(" Quit ", Style::default().fg(styles::fg_muted())));
+    let right_spans = vec![
+        Span::styled("?", Style::default().fg(styles::fg_border())),
+        Span::styled(" Help ", hint_style),
+        Span::styled("q", Style::default().fg(styles::fg_border())),
+        Span::styled(" Quit ", hint_style),
+    ];
 
-    // Calculate padding to center the center_spans
+    // Calculate padding
     let left_width: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
-    let center_width: usize = center_spans.iter().map(|s| s.content.chars().count()).sum();
     let right_width: usize = right_spans.iter().map(|s| s.content.chars().count()).sum();
+    let padding = (area.width as usize).saturating_sub(left_width + right_width);
 
-    let total_content = left_width + center_width + right_width + 2; // +2 for edge padding
-    let remaining = (area.width as usize).saturating_sub(total_content);
-
-    // Split remaining space: more on left of center, rest on right
-    let left_pad = remaining / 2;
-    let right_pad = remaining.saturating_sub(left_pad);
-
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(left_spans);
-    spans.push(Span::raw(" ".repeat(left_pad)));
-    spans.extend(center_spans);
-    spans.push(Span::raw(" ".repeat(right_pad)));
+    let mut spans = left_spans;
+    spans.push(Span::raw(" ".repeat(padding)));
     spans.extend(right_spans);
-    spans.push(Span::raw(" "));
 
-    // Top border line
+    let hints = Line::from(spans);
+
+    // Top border line (file tree's ┤ handles the left connection when sidebar visible)
     let border_line = Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(styles::fg_border()).bg(styles::bg_header()),
+        Style::default().fg(border_color).bg(styles::bg_header()),
     ));
 
-    let status_line = Line::from(spans);
-    let para = Paragraph::new(vec![border_line, status_line])
+    let hints_widget = Paragraph::new(vec![border_line, hints])
         .style(Style::default().bg(styles::bg_header()));
-    frame.render_widget(para, area);
+    frame.render_widget(hints_widget, area);
 }
 
 /// Add a toggle icon with label and hotkey.
-fn add_toggle_icon(spans: &mut Vec<Span<'static>>, icon: &'static str, label: &str, key: &'static str, active: bool) {
-    let fg = if active { styles::fg_default() } else { styles::fg_muted() };
-
-    spans.push(Span::styled(format!(" {}", icon), Style::default().fg(fg)));
-    spans.push(Span::styled(format!(" {}", label), Style::default().fg(fg)));
-    spans.push(Span::styled(format!(" {}", key), Style::default().fg(styles::fg_border())));
-    spans.push(Span::raw(" "));
-}
-
 /// Render the global header spanning full width.
 #[allow(clippy::too_many_arguments)]
 fn render_global_header(
@@ -564,6 +538,178 @@ pub fn render_theme_picker(
         styles::style_muted(),
     )));
     frame.render_widget(hint, hint_area);
+}
+
+/// Render the fuzzy search as a bottom drawer above the diff bottom bar.
+pub fn render_fuzzy_search(
+    frame: &mut Frame,
+    area: Rect,
+    state: &crate::search::FuzzySearchState,
+    sidebar_collapsed: bool,
+) {
+    // Calculate diff area position
+    // Layout: header (2) + content + bottom bar (2, but drawer goes above it)
+    let header_height = 2;
+    let bottom_bar_height = 2;
+    let content_height = area.height.saturating_sub(header_height + bottom_bar_height);
+
+    // Sidebar width when visible
+    let sidebar_width = if sidebar_collapsed { 0 } else { 40.min(area.width / 3) };
+
+    // Drawer dimensions - positioned in diff area, above the bottom bar
+    let drawer_height = 10.min(content_height);
+    let drawer_area = Rect {
+        x: area.x + sidebar_width,
+        y: area.y + header_height + content_height - drawer_height,
+        width: area.width.saturating_sub(sidebar_width),
+        height: drawer_height,
+    };
+
+    frame.render_widget(Clear, drawer_area);
+
+    // Top border
+    let border_line = Line::from(Span::styled(
+        "─".repeat(drawer_area.width as usize),
+        Style::default().fg(styles::fg_hunk()),
+    ));
+
+    // Split drawer into border, input, results, and hints
+    let chunks = Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top border
+            Constraint::Length(1), // Input line
+            Constraint::Min(1),    // Results
+            Constraint::Length(1), // Hints
+        ])
+        .split(drawer_area);
+
+    // Render top border
+    let border = Paragraph::new(border_line)
+        .style(Style::default().bg(styles::bg_sidebar()));
+    frame.render_widget(border, chunks[0]);
+
+    // Input line with search icon and query
+    let result_count = if state.results.is_empty() {
+        String::new()
+    } else {
+        format!("{}/{}", state.selected_index + 1, state.results.len())
+    };
+
+    let input_spans = if state.query.is_empty() {
+        vec![
+            Span::styled(" /", Style::default().fg(styles::fg_hunk())),
+            Span::styled(" █", Style::default().fg(styles::fg_hunk())),
+            Span::styled(" Search diff...", Style::default().fg(styles::fg_muted())),
+        ]
+    } else {
+        vec![
+            Span::styled(" /", Style::default().fg(styles::fg_hunk())),
+            Span::styled(format!(" {}", &state.query), Style::default().fg(styles::fg_default())),
+            Span::styled("█", Style::default().fg(styles::fg_hunk())),
+            Span::styled(format!("  {}", result_count), Style::default().fg(styles::fg_muted())),
+        ]
+    };
+
+    let input = Paragraph::new(Line::from(input_spans))
+        .style(Style::default().bg(styles::bg_sidebar()));
+    frame.render_widget(input, chunks[1]);
+
+    // Results list
+    let visible_height = chunks[2].height as usize;
+    let results_to_show: Vec<ListItem> = state
+        .results
+        .iter()
+        .skip(state.scroll)
+        .take(visible_height)
+        .enumerate()
+        .map(|(i, result)| {
+            let absolute_idx = state.scroll + i;
+            let is_selected = absolute_idx == state.selected_index;
+
+            let line_num = result.entry.line_number
+                .map(|n| format!(":{}", n))
+                .unwrap_or_default();
+
+            let kind_char = match result.entry.line_kind {
+                crate::ui::diff_view::LineKind::Addition => "+",
+                crate::ui::diff_view::LineKind::Deletion => "-",
+                crate::ui::diff_view::LineKind::FileHeader => "F",
+                crate::ui::diff_view::LineKind::HunkHeader => "@",
+                _ => " ",
+            };
+
+            let kind_color = match result.entry.line_kind {
+                crate::ui::diff_view::LineKind::Addition => styles::fg_addition(),
+                crate::ui::diff_view::LineKind::Deletion => styles::fg_deletion(),
+                crate::ui::diff_view::LineKind::FileHeader => styles::fg_path(),
+                crate::ui::diff_view::LineKind::HunkHeader => styles::fg_hunk(),
+                _ => styles::fg_muted(),
+            };
+
+            let file_path = &result.entry.file_path;
+            let file_display: String = if file_path.len() > 25 {
+                format!("...{}", &file_path[file_path.len().saturating_sub(22)..])
+            } else {
+                file_path.clone()
+            };
+
+            let max_content = (chunks[2].width as usize).saturating_sub(file_display.len() + line_num.len() + 6);
+            let content: String = result.entry.content
+                .chars()
+                .take(max_content)
+                .collect();
+
+            let style = if is_selected {
+                Style::default()
+                    .bg(styles::bg_selected())
+                    .fg(styles::fg_default())
+            } else {
+                Style::default().bg(styles::bg_sidebar())
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(" ", style),
+                Span::styled(kind_char, style.fg(kind_color)),
+                Span::styled(" ", style),
+                Span::styled(file_display, style.fg(styles::fg_path())),
+                Span::styled(line_num, style.fg(styles::fg_line_num())),
+                Span::styled("  ", style),
+                Span::styled(content, style.fg(styles::fg_default())),
+            ]))
+        })
+        .collect();
+
+    let results_widget = if state.query.is_empty() {
+        let placeholder = vec![ListItem::new(Line::from(Span::styled(
+            "  Type to search through diff content",
+            Style::default().fg(styles::fg_muted()),
+        )))];
+        List::new(placeholder)
+    } else if results_to_show.is_empty() {
+        let no_results = vec![ListItem::new(Line::from(Span::styled(
+            "  No matches found",
+            Style::default().fg(styles::fg_muted()),
+        )))];
+        List::new(no_results)
+    } else {
+        List::new(results_to_show)
+    };
+
+    let results_list = results_widget.style(Style::default().bg(styles::bg_sidebar()));
+    frame.render_widget(results_list, chunks[2]);
+
+    // Hints at bottom
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(" Enter", Style::default().fg(styles::fg_border())),
+        Span::styled(" select ", Style::default().fg(styles::fg_muted())),
+        Span::styled("Esc", Style::default().fg(styles::fg_border())),
+        Span::styled(" close ", Style::default().fg(styles::fg_muted())),
+        Span::styled("j/k", Style::default().fg(styles::fg_border())),
+        Span::styled(" preview", Style::default().fg(styles::fg_muted())),
+    ]))
+    .style(Style::default().bg(styles::bg_sidebar()));
+    frame.render_widget(hint, chunks[3]);
 }
 
 /// Render an empty state.

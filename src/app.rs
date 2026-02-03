@@ -6,6 +6,7 @@ use crate::ports::{
     FileWatcher, GitRepo, KeyCode, KeyModifiers, MouseEvent, NewComment, NewReply, StateStore,
     Terminal, TerminalEvent,
 };
+use crate::search::{self, FuzzySearchState, SearchableEntry};
 use crate::ui::{diff_view, file_tree, layout, theme};
 use anyhow::Result;
 use ratatui::widgets::ListState;
@@ -24,6 +25,8 @@ pub enum ViewMode {
     Visual,
     /// Inputting a comment
     CommentInput,
+    /// Fuzzy search through diff content
+    FuzzySearch,
 }
 
 /// Which pane/input has focus.
@@ -110,6 +113,10 @@ pub struct App {
     /// Theme picker state
     theme_picker_items: Vec<String>,
     theme_picker_index: usize,
+    /// Fuzzy search state
+    pub fuzzy_search: Option<FuzzySearchState>,
+    /// Cached search index (built from diff_lines)
+    search_index: Vec<SearchableEntry>,
 }
 
 impl App {
@@ -196,6 +203,8 @@ impl App {
             keymap: build_default_keymap(),
             theme_picker_items: Vec::new(),
             theme_picker_index: 0,
+            fuzzy_search: None,
+            search_index: Vec::new(),
         })
     }
 
@@ -344,6 +353,9 @@ impl App {
             self.scroll = self.diff_lines.len().saturating_sub(1);
         }
 
+        // Clear search index so it gets rebuilt on next search
+        self.search_index.clear();
+
         Ok(())
     }
 
@@ -420,6 +432,9 @@ impl App {
         let reply_to_id = self.reply_to_comment_id;
         let reply_input = self.comment_input.clone();
 
+        // Fuzzy search state for overlay
+        let fuzzy_search = &self.fuzzy_search;
+
         terminal.draw(|frame| {
             let area = frame.area();
 
@@ -478,6 +493,11 @@ impl App {
                     &self.theme_picker_items,
                     self.theme_picker_index,
                 );
+            }
+            if mode == ViewMode::FuzzySearch {
+                if let Some(state) = fuzzy_search {
+                    layout::render_fuzzy_search(frame, area, state, sidebar_collapsed);
+                }
             }
             // Note: Visual mode and CommentInput are shown in the status bar
         })
@@ -546,6 +566,7 @@ impl App {
             ViewMode::ThemePicker => contexts.push(Context::ThemePicker),
             ViewMode::Visual => contexts.push(Context::Visual),
             ViewMode::CommentInput => contexts.push(Context::CommentInput),
+            ViewMode::FuzzySearch => contexts.push(Context::FuzzySearch),
             ViewMode::Normal => {}
         }
 
@@ -563,6 +584,13 @@ impl App {
             if !modifiers.ctrl {
                 if self.mode == ViewMode::ThemePicker {
                     // Ignore text input while theme picker is open
+                } else if self.mode == ViewMode::FuzzySearch {
+                    // Handle text input for fuzzy search
+                    if let Some(ref mut state) = self.fuzzy_search {
+                        state.query.push(c);
+                        self.update_fuzzy_search_results();
+                    }
+                    return Ok(());
                 } else if self.mode == ViewMode::CommentInput {
                     self.comment_input.push(c);
                     return Ok(());
@@ -614,6 +642,44 @@ impl App {
                 }
                 Action::CloseThemePicker | Action::ToggleThemePicker => {
                     self.close_theme_picker();
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        if self.mode == ViewMode::FuzzySearch {
+            // Search drawer is 10 rows: 1 border + 1 input + results + 1 hints
+            // So results area is about 7 rows
+            const SEARCH_RESULTS_HEIGHT: usize = 7;
+
+            match action {
+                Action::MoveDown => {
+                    if let Some(ref mut state) = self.fuzzy_search {
+                        state.select_next();
+                        state.ensure_visible(SEARCH_RESULTS_HEIGHT);
+                    }
+                    self.scroll_to_search_selection();
+                }
+                Action::MoveUp => {
+                    if let Some(ref mut state) = self.fuzzy_search {
+                        state.select_prev();
+                        state.ensure_visible(SEARCH_RESULTS_HEIGHT);
+                    }
+                    self.scroll_to_search_selection();
+                }
+                Action::CloseFuzzySearch => {
+                    self.close_fuzzy_search();
+                }
+                Action::FuzzySearchSelect => {
+                    self.scroll_to_search_selection();
+                    self.close_fuzzy_search();
+                }
+                Action::FuzzySearchBackspace => {
+                    if let Some(ref mut state) = self.fuzzy_search {
+                        state.query.pop();
+                    }
+                    self.update_fuzzy_search_results();
                 }
                 _ => {}
             }
@@ -718,6 +784,16 @@ impl App {
                     Focus::FilterInput => Focus::FileTree,
                 };
             }
+            Action::FocusFileTree => {
+                // Open sidebar if collapsed, then focus
+                if self.sidebar_collapsed {
+                    self.sidebar_collapsed = false;
+                }
+                self.focus = Focus::FileTree;
+            }
+            Action::FocusDiffView => {
+                self.focus = Focus::DiffView;
+            }
             Action::FocusFilter => {
                 self.focus = Focus::FilterInput;
             }
@@ -732,6 +808,10 @@ impl App {
             }
             Action::ToggleSidebar => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
+                // Auto-focus diff view when hiding the sidebar
+                if self.sidebar_collapsed {
+                    self.focus = Focus::DiffView;
+                }
             }
             Action::ToggleComments => {
                 self.show_comments = !self.show_comments;
@@ -907,7 +987,23 @@ impl App {
                 self.should_quit = true;
             }
 
-            // These are handled specially in handle_key
+            // === Fuzzy search ===
+            Action::OpenFuzzySearch => {
+                self.open_fuzzy_search();
+            }
+            Action::CloseFuzzySearch => {
+                self.close_fuzzy_search();
+            }
+            Action::FuzzySearchSelect => {
+                self.scroll_to_search_selection();
+                self.close_fuzzy_search();
+            }
+            Action::FuzzySearchBackspace => {
+                if let Some(ref mut state) = self.fuzzy_search {
+                    state.query.pop();
+                    self.update_fuzzy_search_results();
+                }
+            }
         }
 
         Ok(())
@@ -961,6 +1057,55 @@ impl App {
             }
         }
         self.theme_picker_index = 0;
+    }
+
+    // ─── Fuzzy search ───
+
+    fn open_fuzzy_search(&mut self) {
+        // Build search index if needed
+        if self.search_index.is_empty() {
+            let file_paths: Vec<String> = self.diff.files.iter().map(|f| f.path.clone()).collect();
+            self.search_index = search::build_search_index(&self.diff_lines, &file_paths);
+        }
+
+        self.fuzzy_search = Some(FuzzySearchState::new());
+        self.mode = ViewMode::FuzzySearch;
+    }
+
+    fn close_fuzzy_search(&mut self) {
+        self.fuzzy_search = None;
+        self.mode = ViewMode::Normal;
+    }
+
+    fn scroll_to_search_selection(&mut self) {
+        let target_line = self.fuzzy_search.as_ref()
+            .and_then(|state| state.selected())
+            .map(|result| result.entry.diff_line_index);
+
+        if let Some(line_idx) = target_line {
+            // Jump to the selected line
+            self.cursor = line_idx;
+            // Position cursor near top of visible area (above the search drawer)
+            // Search drawer takes ~10 rows, so put result higher in viewport
+            self.scroll = line_idx.saturating_sub(2);
+
+            // Update current file index from cursor
+            if let Some(line) = self.diff_lines.get(self.cursor) {
+                if self.current_file_index != line.file_index {
+                    self.current_file_index = line.file_index;
+                    self.sync_tree_selection();
+                }
+            }
+        }
+    }
+
+    fn update_fuzzy_search_results(&mut self) {
+        if let Some(ref mut state) = self.fuzzy_search {
+            let query = state.query.clone();
+            state.results = search::fuzzy_search(&query, &self.search_index, 100);
+            state.selected_index = 0;
+            state.scroll = 0;
+        }
     }
 
     /// Get the visual selection range (start_line, end_line) sorted.

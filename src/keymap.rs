@@ -27,6 +27,8 @@ pub enum Context {
     Help = 7,
     /// Theme picker overlay is shown
     ThemePicker = 8,
+    /// Fuzzy search overlay is shown
+    FuzzySearch = 9,
 }
 
 /// Categories for grouping keybindings in help display.
@@ -73,6 +75,8 @@ pub enum Action {
 
     // Focus
     SwitchPane,
+    FocusFileTree,
+    FocusDiffView,
     FocusFilter,
 
     // View toggles
@@ -112,6 +116,12 @@ pub enum Action {
     // Theme picker
     ApplyTheme,
     CloseThemePicker,
+
+    // Fuzzy search
+    OpenFuzzySearch,
+    CloseFuzzySearch,
+    FuzzySearchSelect,
+    FuzzySearchBackspace,
 }
 
 /// A single key binding with optional context requirement.
@@ -335,11 +345,14 @@ pub fn build_default_keymap() -> Keymap {
     // === Actions (shown in help) ===
     km.bind(key(KeyCode::Enter, Action::SelectFile).help(Actions, "Select file / toggle collapse"));
     km.bind(key(KeyCode::Tab, Action::SwitchPane).help(Actions, "Switch pane focus"));
+    km.bind(ch('1', Action::FocusFileTree).help(Actions, "Focus file tree"));
+    km.bind(ch('2', Action::FocusDiffView).help(Actions, "Focus diff view"));
     km.bind(ch('/', Action::FocusFilter).help(Actions, "Focus filter input"));
     km.bind(ch('x', Action::ToggleViewed).help(Actions, "Mark file as viewed"));
     km.bind(ch('c', Action::ToggleCollapse).help(Actions, "Collapse/expand file"));
     km.bind(ch('s', Action::ToggleSplitView).help(Actions, "Toggle split/unified view"));
-    km.bind(ch('b', Action::ToggleSidebar).help(Actions, "Toggle sidebar"));
+    km.bind(ch('!', Action::ToggleSidebar).help(Actions, "Toggle sidebar"));
+    km.bind(ch('b', Action::ToggleSidebar)); // Keep as secondary binding (hidden from help)
     km.bind(ch('r', Action::Refresh).help(Actions, "Refresh diff"));
     km.bind(ch('u', Action::CycleDiffSource).help(Actions, "Cycle diff source"));
 
@@ -425,6 +438,19 @@ pub fn build_default_keymap() -> Keymap {
     km.bind(key(KeyCode::Esc, Action::CancelInput).in_context(Context::CommentInput));
     km.bind(key(KeyCode::Enter, Action::SubmitInput).in_context(Context::CommentInput));
     km.bind(key(KeyCode::Backspace, Action::InputBackspace).in_context(Context::CommentInput));
+
+    // === Fuzzy search mode ===
+    // '/' in DiffView opens fuzzy search (higher specificity than Global FocusFilter)
+    km.bind(ch('/', Action::OpenFuzzySearch).in_context(Context::DiffView));
+    km.bind(key(KeyCode::Esc, Action::CloseFuzzySearch).in_context(Context::FuzzySearch));
+    km.bind(key(KeyCode::Enter, Action::FuzzySearchSelect).in_context(Context::FuzzySearch));
+    km.bind(key(KeyCode::Backspace, Action::FuzzySearchBackspace).in_context(Context::FuzzySearch));
+    km.bind(ch('j', Action::MoveDown).in_context(Context::FuzzySearch));
+    km.bind(ch('k', Action::MoveUp).in_context(Context::FuzzySearch));
+    km.bind(key(KeyCode::Down, Action::MoveDown).in_context(Context::FuzzySearch));
+    km.bind(key(KeyCode::Up, Action::MoveUp).in_context(Context::FuzzySearch));
+    km.bind(ch('n', Action::MoveDown).with_ctrl().in_context(Context::FuzzySearch));
+    km.bind(ch('p', Action::MoveUp).with_ctrl().in_context(Context::FuzzySearch));
 
     km
 }
@@ -514,5 +540,41 @@ mod tests {
         let move_down = nav_entries.iter().find(|e| e.description == "Move down");
         assert!(move_down.is_some());
         assert_eq!(move_down.unwrap().key_display, "j");
+    }
+
+    #[test]
+    fn test_fuzzy_search_in_diff_view() {
+        let km = build_default_keymap();
+
+        // '/' in DiffView context should open fuzzy search
+        let contexts = vec![Context::Global, Context::DiffView];
+        let action = km.lookup(KeyCode::Char('/'), KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::OpenFuzzySearch));
+
+        // '/' in FileTree context should focus filter (falls through to Global)
+        let contexts = vec![Context::Global, Context::FileTree];
+        let action = km.lookup(KeyCode::Char('/'), KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::FocusFilter));
+    }
+
+    #[test]
+    fn test_fuzzy_search_mode_captures_keys() {
+        let km = build_default_keymap();
+        let contexts = vec![Context::Global, Context::DiffView, Context::FuzzySearch];
+
+        // Esc closes fuzzy search
+        let action = km.lookup(KeyCode::Esc, KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::CloseFuzzySearch));
+
+        // Enter selects result
+        let action = km.lookup(KeyCode::Enter, KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::FuzzySearchSelect));
+
+        // j/k navigate
+        let action = km.lookup(KeyCode::Char('j'), KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::MoveDown));
+
+        let action = km.lookup(KeyCode::Char('k'), KeyModifiers::default(), &contexts);
+        assert_eq!(action, Some(Action::MoveUp));
     }
 }

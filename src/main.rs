@@ -8,6 +8,7 @@ mod app;
 mod domain;
 mod keymap;
 mod ports;
+mod search;
 mod ui;
 
 use adapters::{CrosstermTerminal, Git2Repo, JjRepo, NotifyFileWatcher, SqliteStateStore};

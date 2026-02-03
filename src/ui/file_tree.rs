@@ -319,11 +319,46 @@ pub fn render(
     filter: &str,
     filter_focused: bool,
     list_state: &mut ListState,
+    focused: bool,
 ) {
+    // Split area to have right border run full height
+    let h_chunks = Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    // Border color
+    let border_color = if focused {
+        styles::fg_hunk()
+    } else {
+        styles::fg_border()
+    };
+
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
-        .split(area);
+        .constraints([
+            Constraint::Length(3),  // Filter input
+            Constraint::Min(1),     // File list
+            Constraint::Length(2),  // Bottom bar with hints
+        ])
+        .split(h_chunks[0]);
+
+    // Right border spanning full height with proper junction characters
+    // The bottom bar is 2 rows at the bottom of the area
+    let junction_row = area.height.saturating_sub(2); // First row of bottom bar (border line)
+    let mut border_chars = String::new();
+    for i in 0..area.height {
+        if i == junction_row {
+            // Junction with bottom bar's top border
+            border_chars.push('┤');
+        } else {
+            border_chars.push('│');
+        }
+        border_chars.push('\n');
+    }
+    let border_widget = Paragraph::new(border_chars)
+        .style(Style::default().fg(border_color).bg(styles::bg_sidebar()));
+    frame.render_widget(border_widget, h_chunks[1]);
 
     // Filter input with search icon
     let filter_border_color = if filter_focused {
@@ -423,8 +458,6 @@ pub fn render(
     list_state.select(Some(selected));
 
     let tree_block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(styles::fg_border()))
         .padding(Padding::new(1, 0, 0, 0))
         .style(Style::default().bg(styles::bg_sidebar()));
 
@@ -434,4 +467,32 @@ pub fn render(
         .highlight_style(Style::default().bg(styles::bg_selected()));
 
     frame.render_stateful_widget(list, chunks[1], list_state);
+
+    // Bottom bar with hints
+    let hint_style = Style::default().fg(styles::fg_muted());
+    let key_style = Style::default().fg(if focused { styles::fg_default() } else { styles::fg_muted() });
+    let focus_style = if focused {
+        Style::default().fg(styles::fg_hunk()).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(styles::fg_muted())
+    };
+
+    let hints = Line::from(vec![
+        Span::styled(" 1", focus_style),
+        Span::styled(" │ ", Style::default().fg(styles::fg_border())),
+        Span::styled("/", key_style),
+        Span::styled(" Filter ", hint_style),
+        Span::styled("x", key_style),
+        Span::styled(" Viewed ", hint_style),
+    ]);
+
+    // Top border line then hints
+    let border_line = Line::from(Span::styled(
+        "─".repeat(chunks[2].width as usize),
+        Style::default().fg(border_color).bg(styles::bg_header()),
+    ));
+
+    let hints_widget = Paragraph::new(vec![border_line, hints])
+        .style(Style::default().bg(styles::bg_header()));
+    frame.render_widget(hints_widget, chunks[2]);
 }
