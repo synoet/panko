@@ -2,6 +2,10 @@
 
 tui for reviewing local branch changes as GitHub-style pull requests.
 
+
+https://github.com/user-attachments/assets/74810115-2b24-4277-bcef-d7b2702ac770
+
+
 ## What it does
 
 Panko shows your branch diff against the base branch (main/master) exactly how GitHub would display it in a PR. You can add inline comments, reply to them, and mark them resolved—all persisted locally.
