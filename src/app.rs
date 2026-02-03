@@ -213,17 +213,7 @@ impl App {
 
     /// Get git author name for comments.
     fn get_git_author(git: &dyn GitRepo) -> String {
-        // Try to get from git config, fallback to "You"
-        if let Ok(path) = git.workdir() {
-            if let Ok(repo) = git2::Repository::open(&path) {
-                if let Ok(config) = repo.config() {
-                    if let Ok(name) = config.get_string("user.name") {
-                        return name;
-                    }
-                }
-            }
-        }
-        "You".to_string()
+        git.user_name().unwrap_or_else(|_| "You".to_string())
     }
 
     /// Load viewed state from the state store, returning (viewed_files set by index, timestamps map).

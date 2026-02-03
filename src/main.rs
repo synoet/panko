@@ -10,7 +10,7 @@ mod keymap;
 mod ports;
 mod ui;
 
-use adapters::{CrosstermTerminal, Git2Repo, NotifyFileWatcher, SqliteStateStore};
+use adapters::{CrosstermTerminal, Git2Repo, JjRepo, NotifyFileWatcher, SqliteStateStore};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use ports::{GitRepo, StateStore};
@@ -23,6 +23,7 @@ use crossterm::{
 use std::io;
 use std::panic;
 use std::sync::Arc;
+use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(name = "panko")]
@@ -126,17 +127,13 @@ fn main() -> Result<()> {
     theme::init_from_env_and_arg(args.theme.as_deref())
         .map_err(|err| anyhow::anyhow!(err))?;
 
-    // Open git repo
-    let git = if let Some(path) = &args.path {
-        Git2Repo::open(std::path::Path::new(path))
-    } else {
-        Git2Repo::open_current_dir()
-    }
-    .context("Failed to open git repository. Are you in a git directory?")?;
+    // Open repo (jj if available, else git)
+    let git = open_repo(args.path.as_deref())
+        .context("Failed to open repository. Are you in a git or jj directory?")?;
 
     // Handle subcommands (CLI mode for agents)
     if let Some(command) = args.command {
-        return run_cli_command(command, &git);
+        return run_cli_command(command, git.as_ref());
     }
 
     // TUI mode: set up panic hook to restore terminal on panic
@@ -175,10 +172,10 @@ fn main() -> Result<()> {
     let mut terminal = CrosstermTerminal::new().context("Failed to initialize terminal")?;
 
     // Create and run app
-    let mut app = app::App::new(&git, args.base.as_deref(), state_store, file_watcher)
+    let mut app = app::App::new(git.as_ref(), args.base.as_deref(), state_store, file_watcher)
         .context("Failed to initialize app. Do you have commits ahead of the base branch?")?;
 
-    let result = app.run(&mut terminal, &git);
+    let result = app.run(&mut terminal, git.as_ref());
 
     // Terminal cleanup happens in Drop
 
@@ -186,7 +183,7 @@ fn main() -> Result<()> {
 }
 
 /// Run CLI commands (for AI agents)
-fn run_cli_command(command: Command, git: &Git2Repo) -> Result<()> {
+fn run_cli_command(command: Command, git: &dyn GitRepo) -> Result<()> {
     let state_store = SqliteStateStore::new()
         .context("Failed to initialize state store")?;
 
@@ -273,8 +270,26 @@ fn run_cli_command(command: Command, git: &Git2Repo) -> Result<()> {
     Ok(())
 }
 
-fn get_git_user(git: &Git2Repo) -> String {
+fn get_git_user(git: &dyn GitRepo) -> String {
     git.user_name().unwrap_or_else(|_| "Agent".to_string())
+}
+
+fn open_repo(path: Option<&str>) -> Result<Box<dyn GitRepo>> {
+    if let Some(path) = path {
+        let path = Path::new(path);
+        if let Ok(jj) = JjRepo::open(path) {
+            return Ok(Box::new(jj));
+        }
+        let git = Git2Repo::open(path)?;
+        return Ok(Box::new(git));
+    }
+
+    if let Ok(jj) = JjRepo::open_current_dir() {
+        return Ok(Box::new(jj));
+    }
+
+    let git = Git2Repo::open_current_dir()?;
+    Ok(Box::new(git))
 }
 
 fn print_comments_text(comments: &[&domain::Comment]) {
