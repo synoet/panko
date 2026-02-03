@@ -483,6 +483,56 @@ fn run_init_command(target: InitTarget, workdir: &Path) -> Result<()> {
     }
 }
 
+/// Panko permissions to auto-approve in Claude settings
+const PANKO_PERMISSIONS: &[&str] = &[
+    "Bash(panko comments*)",
+    "Bash(panko show*)",
+    "Bash(panko resolve*)",
+    "Bash(panko unresolve*)",
+    "Bash(panko reply*)",
+    "Bash(panko comment*)",
+    "Bash(panko delete*)",
+];
+
+fn merge_panko_permissions(settings_path: &Path) -> Result<()> {
+    use std::fs;
+
+    let content = fs::read_to_string(settings_path)
+        .context("Failed to read settings file")?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)
+        .context("Failed to parse settings JSON")?;
+
+    // Get or create permissions.allow array
+    let permissions = json
+        .as_object_mut()
+        .context("Settings must be a JSON object")?
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+
+    let allow = permissions
+        .as_object_mut()
+        .context("permissions must be an object")?
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+
+    let allow_array = allow
+        .as_array_mut()
+        .context("permissions.allow must be an array")?;
+
+    // Add new permissions if not already present
+    for perm in PANKO_PERMISSIONS {
+        let perm_val = serde_json::Value::String(perm.to_string());
+        if !allow_array.contains(&perm_val) {
+            allow_array.push(perm_val);
+        }
+    }
+
+    fs::write(settings_path, serde_json::to_string_pretty(&json)?)
+        .context("Failed to write settings file")?;
+
+    Ok(())
+}
+
 fn init_claude(workdir: &Path) -> Result<()> {
     use std::fs;
 
@@ -499,12 +549,20 @@ fn init_claude(workdir: &Path) -> Result<()> {
         .context("Failed to write skill file")?;
     println!("Created {}", skill_path.display());
 
-    // Write or merge settings.json
+    // Write or merge settings
     let settings_path = claude_dir.join("settings.json");
+    let settings_local_path = claude_dir.join("settings.local.json");
+
     if settings_path.exists() {
-        println!("Note: {} already exists - add these permissions manually:", settings_path.display());
-        println!("{}", CLAUDE_SETTINGS_PERMISSIONS);
+        // Merge into existing settings.json
+        merge_panko_permissions(&settings_path)?;
+        println!("Merged panko permissions into {}", settings_path.display());
+    } else if settings_local_path.exists() {
+        // Merge into existing settings.local.json
+        merge_panko_permissions(&settings_local_path)?;
+        println!("Merged panko permissions into {}", settings_local_path.display());
     } else {
+        // Create new settings.json
         fs::write(&settings_path, CLAUDE_SETTINGS_CONTENT)
             .context("Failed to write settings file")?;
         println!("Created {}", settings_path.display());
@@ -591,6 +649,7 @@ When addressing review comments:
 "#;
 
 const CLAUDE_SETTINGS_CONTENT: &str = r#"{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(panko comments*)",
@@ -604,18 +663,6 @@ const CLAUDE_SETTINGS_CONTENT: &str = r#"{
   }
 }
 "#;
-
-const CLAUDE_SETTINGS_PERMISSIONS: &str = r#"  "permissions": {
-    "allow": [
-      "Bash(panko comments*)",
-      "Bash(panko show*)",
-      "Bash(panko resolve*)",
-      "Bash(panko unresolve*)",
-      "Bash(panko reply*)",
-      "Bash(panko comment*)",
-      "Bash(panko delete*)"
-    ]
-  }"#;
 
 const AGENTS_MD_SECTION: &str = r#"## panko - Code Review Comments
 

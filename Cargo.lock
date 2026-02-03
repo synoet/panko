@@ -1055,6 +1055,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "rusqlite",
+ "serde_json",
  "syntect",
  "toml",
  "two-face",
