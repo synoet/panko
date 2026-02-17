@@ -96,6 +96,7 @@ const THEME_ORDER: &[&str] = &[
     "catppuccin-frappe",
     "catppuccin-latte",
     "teoppuccin",
+    "crust",
 ];
 
 pub fn available_themes() -> Vec<String> {
@@ -199,6 +200,7 @@ fn find_theme(name: &str) -> Option<ThemeSpec> {
         "catppuccin-light" | "catpuccin-light" | "catppuccin-latte"
         | "catpuccin-latte" => Some(catppuccin_latte()),
         "teoppuccin" => Some(teoppuccin()),
+        "crust" => Some(crust()),
         _ => None,
     }
 }
@@ -557,6 +559,76 @@ fn teoppuccin() -> ThemeSpec {
     )
 }
 
+// ─── Crust ───────────────────────────────────────────────────────────────────
+
+fn crust() -> ThemeSpec {
+    // Warm, muted dark theme based on crust.toml (Helix theme)
+    //
+    // Core palette:
+    //   bg:      #1d1d1c    sidebar:  #121210    surface:  #2b2b2a
+    //   border:  #3c3c3a    overlay:  #504e4e    text:     #b5b3b3
+    //   orange:  #d6784c    green:    #7a9a65    teal:     #89B482
+    //   blue:    #7DAEA3    red:      #c45a4a    yellow:   #D8A657
+
+    let base = rgb(29, 29, 28);       // #1d1d1c
+    let green = rgb(122, 154, 101);   // #7a9a65
+    let red = rgb(196, 90, 74);       // #c45a4a
+    let teal = rgb(125, 174, 163);    // #7DAEA3
+
+    ThemeSpec {
+        name: "crust",
+        ui: UiTheme {
+            bg_default: base,
+            bg_sidebar: rgb(18, 18, 16),          // #121210
+            bg_header: base,
+            bg_file_header: base,
+            bg_selected: rgb(60, 60, 58),          // #3c3c3a
+            bg_hover: rgb(43, 43, 42),             // #2b2b2a
+            bg_addition_margin: blend(base, green, 0.20),
+            bg_deletion_margin: blend(base, red, 0.20),
+            bg_addition_line: blend(base, green, 0.15),
+            bg_deletion_line: blend(base, red, 0.15),
+            bg_addition_word: blend(base, green, 0.28),
+            bg_deletion_word: blend(base, red, 0.28),
+            bg_addition_selected: blend(base, green, 0.24),
+            bg_deletion_selected: blend(base, red, 0.24),
+            bg_context_selected: rgb(60, 60, 58),  // #3c3c3a
+            bg_hunk_header: blend(base, teal, 0.22),
+            bg_hunk_expand: blend(base, teal, 0.30),
+            fg_default: rgb(181, 179, 179),        // #b5b3b3
+            fg_muted: rgb(122, 120, 120),          // #7a7878
+            fg_addition: green,
+            fg_deletion: red,
+            fg_line_num: rgb(60, 60, 58),          // #3c3c3a
+            fg_line_num_highlight: rgb(143, 141, 141), // #8f8d8d
+            fg_hunk: teal,
+            fg_path: teal,
+            fg_directory: teal,
+            fg_border: rgb(80, 78, 78),            // #504e4e
+            fg_stats_bar: rgb(122, 120, 120),      // #7a7878
+            fg_warning: rgb(216, 166, 87),         // #D8A657
+            fg_cursor: rgb(214, 120, 76),          // #d6784c
+            border_top_left: "╭",
+            border_top_right: "╮",
+            border_bottom_left: "╰",
+            border_bottom_right: "╯",
+            border_horizontal: "─",
+            border_vertical: "│",
+        },
+        syntax: SyntaxPalette {
+            fg: syn(181, 179, 179),        // #b5b3b3 - default text
+            background: syn(29, 29, 28),   // #1d1d1c - bg
+            comment: syn(80, 78, 78),      // #504e4e - comments
+            keyword: syn(214, 120, 76),    // #d6784c - keywords/control
+            string: syn(122, 154, 101),    // #7a9a65 - strings
+            constant: syn(216, 166, 87),   // #D8A657 - numeric constants
+            entity: syn(137, 180, 130),    // #89B482 - types/functions
+            tag: syn(196, 90, 74),         // #c45a4a - tags
+            variable: syn(163, 161, 161),  // #a3a1a1 - variables
+        },
+    }
+}
+
 // ─── Syntect theme builder ───────────────────────────────────────────────────
 
 fn build_syntect_theme(palette: &SyntaxPalette, name: &str) -> Theme {
@@ -631,5 +703,6 @@ mod tests {
         assert!(names.contains(&"github-dark".to_string()));
         assert!(names.contains(&"catppuccin-mocha".to_string()));
         assert!(names.contains(&"teoppuccin".to_string()));
+        assert!(names.contains(&"crust".to_string()));
     }
 }

@@ -30,9 +30,18 @@ impl JjRepo {
             return Err(anyhow!("jj root returned empty path"));
         }
 
-        Ok(Self {
+        let repo = Self {
             root: PathBuf::from(root),
-        })
+        };
+
+        // `jj root` can succeed when a stray `.jj` directory exists, but later jj
+        // commands fail because the repository metadata is incomplete. Probe with a
+        // read-only command so callers can fall back to git cleanly.
+        repo
+            .run_jj(&["status"])
+            .context("jj repository probe failed")?;
+
+        Ok(repo)
     }
 
     pub fn open_current_dir() -> Result<Self> {
@@ -430,4 +439,65 @@ fn parse_range(input: &str) -> Option<(u32, u32)> {
         None => 1,
     };
     Some((start, lines))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JjRepo;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn has_jj() -> bool {
+        Command::new("jj").arg("--version").output().is_ok()
+    }
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after UNIX_EPOCH")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("panko-{}-{}-{}", prefix, std::process::id(), ts));
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        dir
+    }
+
+    #[test]
+    fn open_rejects_broken_jj_metadata() {
+        if !has_jj() {
+            return;
+        }
+
+        let dir = make_temp_dir("broken-jj");
+        fs::create_dir_all(dir.join(".jj")).expect("failed to create fake .jj directory");
+
+        let result = JjRepo::open(&dir);
+        assert!(
+            result.is_err(),
+            "JjRepo::open should reject incomplete .jj metadata so callers can fall back to git"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_accepts_valid_jj_repo() {
+        if !has_jj() {
+            return;
+        }
+
+        let dir = make_temp_dir("valid-jj");
+        let status = Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(&dir)
+            .status()
+            .expect("failed to execute jj git init");
+        assert!(status.success(), "jj git init --colocate should succeed");
+
+        let result = JjRepo::open(&dir);
+        assert!(result.is_ok(), "JjRepo::open should accept valid jj repos");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
