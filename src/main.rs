@@ -302,19 +302,22 @@ fn get_git_user(git: &dyn GitRepo) -> String {
 fn open_repo(path: Option<&str>) -> Result<Box<dyn GitRepo>> {
     if let Some(path) = path {
         let path = Path::new(path);
-        if let Ok(jj) = JjRepo::open(path) {
-            return Ok(Box::new(jj));
+        // Prefer git when both git and jj metadata are present.
+        // This avoids selecting jj for plain git repos that happen to contain `.jj`.
+        if let Ok(git) = Git2Repo::open(path) {
+            return Ok(Box::new(git));
         }
-        let git = Git2Repo::open(path)?;
-        return Ok(Box::new(git));
-    }
-
-    if let Ok(jj) = JjRepo::open_current_dir() {
+        let jj = JjRepo::open(path)?;
         return Ok(Box::new(jj));
     }
 
-    let git = Git2Repo::open_current_dir()?;
-    Ok(Box::new(git))
+    // Prefer git when both git and jj metadata are present.
+    if let Ok(git) = Git2Repo::open_current_dir() {
+        return Ok(Box::new(git));
+    }
+
+    let jj = JjRepo::open_current_dir()?;
+    Ok(Box::new(jj))
 }
 
 fn print_comments_text(comments: &[&domain::Comment]) {
